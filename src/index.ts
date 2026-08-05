@@ -68,9 +68,11 @@ app.use("*", async (c, next) => {
   c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 });
 
-// Simple bearer auth gate
+// Simple bearer auth gate (skips health/debug)
 app.use("*", async (c, next) => {
   if (c.req.method === "OPTIONS") return next();
+  const path = new URL(c.req.url).pathname;
+  if (path === "/health" || path === "/debug") return next();
   const expected = c.env.MIVIDA_AUTH_TOKEN;
   const auth = c.req.header("Authorization") || "";
   if (!expected || auth !== `Bearer ${expected}`) {
@@ -79,8 +81,15 @@ app.use("*", async (c, next) => {
   return next();
 });
 
-// Health check
+// Health check (no auth required — useful for debugging binding issues)
 app.get("/health", (c) => c.json({ ok: true, env: c.env.ENVIRONMENT }));
+
+// Debug: dump all env keys (excludes values) to diagnose secret binding
+app.get("/debug", (c) => {
+  const keys = Object.keys(c.env).filter((k) => k !== "MIVIDA_AUTH_TOKEN");
+  const hasToken = typeof c.env.MIVIDA_AUTH_TOKEN === "string" && c.env.MIVIDA_AUTH_TOKEN.length > 0;
+  return c.json({ keys, hasToken, tokenLength: hasToken ? c.env.MIVIDA_AUTH_TOKEN.length : 0 });
+});
 
 // ---------------------------------------------------------------------------
 // Patients

@@ -1,17 +1,17 @@
 name = "mivida"
 main = "src/index.ts"
 compatibility_date = "2025-08-01"
-account_id = "REPLACE_WITH_ACCOUNT_ID"
+account_id = "6a01326e6dca1570d327c252d15c2816"
 
 # D1 database binding (create with: wrangler d1 create mivida-db)
 [[d1_databases]]
 binding = "DB"
 database_name = "mivida-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "cb161db0-47bc-44f5-a06f-24802b4afebf"
 
 # Secrets (set with: wrangler secret put MIVIDA_AUTH_TOKEN)
 [vars]
-ENVIRONMENT = "dev"
+ENVIRONMENT = "production"
 
 # Daily exception monitor: 06:30 UTC
 [triggers]
