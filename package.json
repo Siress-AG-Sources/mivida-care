@@ -1,0 +1,23 @@
+{
+  "name": "mivida",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply mivida-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply mivida-db --remote",
+    "db:seed:local": "wrangler d1 execute mivida-db --local --file=seed.sql",
+    "db:seed:remote": "wrangler d1 execute mivida-db --remote --file=seed.sql",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250801.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.119.0"
+  },
+  "dependencies": {
+    "hono": "^4.13.0"
+  }
+}
