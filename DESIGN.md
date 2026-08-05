@@ -4,8 +4,10 @@ Source: "Work Flow Note to Tony Siress.docx" (22 July 2026)
 Working directory: ~/Sites/mivida
 Brand: Mi Vida Health (mivida.health) — concierge medicine; clinical
   compounding pharmacists as core team; virtual services; 200+ languages.
-  Signature palette: dark teal #0D2E37/#1B3A42, teal/cyan #00BCD4,
-  soft mint #DBE7E6/#DCF5F2, orange CTA #FE632D, light bg #F7F7F7.
+  Palette (measured from live site): dark teal-green #0D2E37 (headings/button
+  text), bright orange #FF632D (buttons), mint/cream #DBE7E6 and #DCF5F2
+  (secondary buttons, cards, section backgrounds), gray-teal body #678188,
+  off-white bg #F7F7F7. Font: Plus Jakarta Sans.
   Services: Mental Health, Sexual Wellness, Hormone Replacement, Weight Loss,
   Pharmacist Services, Nutritional Supplementation.
 
