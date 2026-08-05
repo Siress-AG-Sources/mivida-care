@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MiVida Care</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">M</span>
+      <div>
+        <h1>MiVida Care</h1>
+        <p class="tagline">clinical decisions → written schedules</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button id="btnSettings" class="btn btn-ghost" title="Connection settings">⚙︎ Settings</button>
+      <span id="connStatus" class="badge badge-muted">disconnected</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-view="dash">Overview</button>
+    <button class="tab" data-view="patients">Patients</button>
+    <button class="tab" data-view="exceptions">Exceptions</button>
+    <button class="tab" data-view="refills">Refill prompts</button>
+  </nav>
+
+  <main id="main" class="container">
+    <!-- DASHBOARD -->
+    <section id="view-dash" class="view">
+      <div class="grid-3">
+        <div class="card stat-card"><p class="stat-label">Patients</p><p id="statPatients" class="stat-value">–</p></div>
+        <div class="card stat-card"><p class="stat-label">Unresolved exceptions</p><p id="statExceptions" class="stat-value">–</p></div>
+        <div class="card stat-card"><p class="stat-label">Open refills</p><p id="statRefills" class="stat-value">–</p></div>
+      </div>
+      <h2 class="section-title">Status board</h2>
+      <div id="statusBoard" class="stack"></div>
+    </section>
+
+    <!-- PATIENTS -->
+    <section id="view-patients" class="view hidden">
+      <div class="card">
+        <h2 class="section-title">Patients</h2>
+        <div id="patientsList" class="stack"></div>
+      </div>
+    </section>
+
+    <!-- EXCEPTIONS -->
+    <section id="view-exceptions" class="view hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2 class="section-title">Exceptions</h2>
+          <button id="btnRunMonitor" class="btn btn-primary btn-sm">Run monitor now</button>
+        </div>
+        <div id="exceptionsList" class="stack"></div>
+      </div>
+    </section>
+
+    <!-- REFILLS -->
+    <section id="view-refills" class="view hidden">
+      <div class="card">
+        <h2 class="section-title">Refill prompts</h2>
+        <div id="refillsList" class="stack"></div>
+      </div>
+    </section>
+
+    <!-- PATIENT DETAIL MODAL -->
+    <dialog id="patientModal" class="modal">
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2 id="patientName" class="section-title"></h2>
+          <button class="btn btn-ghost" onclick="patientModal.close()">✕</button>
+        </div>
+        <div id="patientDetail" class="stack"></div>
+      </div>
+    </dialog>
+
+    <!-- SETTINGS MODAL -->
+    <dialog id="settingsModal" class="modal">
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2 class="section-title">Connection settings</h2>
+          <button class="btn btn-ghost" onclick="settingsModal.close()">✕</button>
+        </div>
+        <label class="field">
+          <span>API base URL</span>
+          <input id="setBaseUrl" type="text" placeholder="https://mivida.siress.workers.dev" />
+        </label>
+        <label class="field">
+          <span>Auth token</span>
+          <input id="setToken" type="password" placeholder="Bearer token" />
+        </label>
+        <div class="row-end">
+          <button id="btnSaveSettings" class="btn btn-primary">Save</button>
+        </div>
+        <p id="settingsMsg" class="muted small"></p>
+      </div>
+    </dialog>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/app.js?v=2"></script>
+</body>
+</html>

@@ -3,7 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2025-08-01"
 account_id = "6a01326e6dca1570d327c252d15c2816"
 
-# D1 database binding (create with: wrangler d1 create mivida-db)
+# Static frontend (public/)
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# D1 database binding
 [[d1_databases]]
 binding = "DB"
 database_name = "mivida-db"

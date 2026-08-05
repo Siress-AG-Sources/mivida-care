@@ -1,12 +1,14 @@
 /**
- * MiVida Care — Cloudflare Worker API
+ * MiVida Care — Cloudflare Worker API + static frontend
  * Administrative coordinator only: the AI never prescribes, never doses,
  * never submits pharmacy orders. It recognizes when a refill/new order is
  * needed and produces a prompt the provider executes manually.
  *
- * Stack: Hono on Workers, D1 for storage.
+ * Stack: Hono on Workers, D1 for storage, Workers static assets for the UI.
+ * Routes: /api/* → API, everything else → static frontend.
  */
 import { Hono } from "hono";
+import type { ExecutionContext } from "@cloudflare/workers-types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -657,9 +659,45 @@ async function audit(
     .run();
 }
 
-// Scheduled handler for the daily exception monitor
+// ---------------------------------------------------------------------------
+// Static assets + entrypoint
+// ---------------------------------------------------------------------------
+
+// The frontend lives in /public and is served as static assets (Workers
+// static assets feature). The API is mounted under /api/*; anything else
+// falls through to the static asset handler.
+
+async function staticAssetsHandler(request: Request, env: Env, ctx: ExecutionContext) {
+  const url = new URL(request.url);
+  let path = url.pathname;
+  if (path === "/") path = "/index.html";
+
+  // Serve from static assets.
+  try {
+    const asset = await (env as any).ASSETS.fetch(new Request(new URL(path, url.origin), request));
+    if (asset.status === 404 && !path.includes(".")) {
+      // SPA fallback to index
+      return (env as any).ASSETS.fetch(new Request(new URL("/index.html", url.origin), request));
+    }
+    return asset;
+  } catch (e) {
+    return new Response("Not found", { status: 404 });
+  }
+}
+
 export default {
-  fetch: app.fetch,
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    // Mount API under /api/*; serve static assets for everything else.
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/api")) {
+      // Strip the /api prefix so the Hono app sees its native routes.
+      const newUrl = new URL(url);
+      newUrl.pathname = url.pathname.replace(/^\/api/, "") || "/";
+      const apiRequest = new Request(newUrl.toString(), request);
+      return app.fetch(apiRequest, env, ctx);
+    }
+    return staticAssetsHandler(request, env, ctx);
+  },
   async scheduled(_event: any, env: Env, _ctx: any) {
     await runExceptionMonitor(env);
   },
