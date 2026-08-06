@@ -450,6 +450,55 @@ async function getSetting(db: D1Database, key: string, fallback: string): Promis
   return (row?.value as string) || fallback;
 }
 
+/** True if an unresolved exception matching (patient, type, details LIKE) already exists. */
+async function openExists(
+  db: D1Database,
+  patientId: number,
+  type: string,
+  detailsLike: string
+): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS n FROM exceptions
+     WHERE patient_id = ? AND exception_type = ? AND details LIKE ? AND resolved_date IS NULL`
+  )
+    .bind(patientId, type, detailsLike)
+    .first<{ n: number }>();
+  return (row?.n ?? 0) > 0;
+}
+
+/** Mark matching unresolved exceptions as resolved (today). */
+async function resolveOpen(
+  db: D1Database,
+  patientId: number,
+  type: string,
+  detailsLike?: string
+): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  let q = `UPDATE exceptions SET resolved_date = ?
+           WHERE patient_id = ? AND exception_type = ? AND resolved_date IS NULL`;
+  const args: any[] = [today, patientId, type];
+  if (detailsLike) {
+    q += " AND details LIKE ?";
+    args.push(detailsLike);
+  }
+  await db.prepare(q).bind(...args).run();
+}
+
+/** Dedup helper: only push if no identical unresolved exception already exists. */
+async function pushIfNew(
+  db: D1Database,
+  created: any[],
+  seen: Set<string>,
+  ex: { patient_id: number; exception_type: string; severity: string; details: string },
+  detailsLike: string
+) {
+  const key = `${ex.patient_id}|${ex.exception_type}|${ex.details}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  if (await openExists(db, ex.patient_id, ex.exception_type, detailsLike)) return;
+  created.push(ex);
+}
+
 /**
  * Daily scan. Emits exception rows for every configured rule that fires.
  * Returns the attention list grouped by severity.
@@ -465,6 +514,7 @@ export async function runExceptionMonitor(env: Env) {
   const taskLead = Number(await getSetting(db, "task_overdue_days", "3"));
 
   const created: any[] = [];
+  const seen = new Set<string>();
 
   // 1. No patient contact for N days (per-patient interval)
   const patients = (await db.prepare("SELECT * FROM patients").all()).results as Patient[];
@@ -475,11 +525,14 @@ export async function runExceptionMonitor(env: Env) {
     ).bind(p.id).first<{ last: string | null }>();
     const lastDate = lastContact?.last ? lastContact.last.slice(0, 10) : null;
     if (!lastDate) {
-      created.push({ patient_id: p.id, exception_type: "no_contact", severity: "high", details: "No encounters on record" });
+      await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "no_contact", severity: "high", details: "No encounters on record" }, "%");
     } else {
       const days = Math.floor((Date.now() - new Date(lastDate).getTime()) / 86400000);
       if (days > interval) {
-        created.push({ patient_id: p.id, exception_type: "no_contact", severity: "medium", details: `No contact in ${days} days (interval ${interval})` });
+        await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "no_contact", severity: "medium", details: `No contact in ${days} days (interval ${interval})` }, "%");
+      } else {
+        // Contact happened recently — clear any stale no_contact exception
+        await resolveOpen(db, p.id, "no_contact");
       }
     }
 
@@ -493,14 +546,19 @@ export async function runExceptionMonitor(env: Env) {
       const exDate = exDateRaw.slice(0, 10);
       const daysLeft = Math.floor((new Date(exDate).getTime() - Date.now()) / 86400000);
       if (daysLeft <= exhaustionLead) {
-        created.push({ patient_id: p.id, exception_type: "medication_running_out", severity: daysLeft <= 7 ? "high" : "medium", details: `${m.name} exhausts ${exDate} (${daysLeft} days)` });
+        await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "medication_running_out", severity: daysLeft <= 7 ? "high" : "medium", details: `${m.name} exhausts ${exDate} (${daysLeft} days)` }, `%${m.name}%`);
+      } else {
+        // No longer running out — clear stale exception for this med
+        await resolveOpen(db, p.id, "medication_running_out", `%${m.name}%`);
       }
       // 3. Prescription prompt generated but not completed
       const openPrompt = await db.prepare(
         "SELECT COUNT(*) AS n FROM refill_prompts WHERE medication_id = ? AND status = 'generated'"
       ).bind(m.id).first<{ n: number }>();
       if (openPrompt && openPrompt.n > 0) {
-        created.push({ patient_id: p.id, exception_type: "prompt_uncompleted", severity: "medium", details: `${m.name} has an uncompleted refill prompt` });
+        await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "prompt_uncompleted", severity: "medium", details: `${m.name} has an uncompleted refill prompt` }, `%${m.name}%`);
+      } else {
+        await resolveOpen(db, p.id, "prompt_uncompleted", `%${m.name}%`);
       }
     }
 
@@ -513,7 +571,9 @@ export async function runExceptionMonitor(env: Env) {
        ORDER BY e.occurred_at DESC LIMIT 1`
     ).bind(p.id, followupLead).first();
     if (overdue) {
-      created.push({ patient_id: p.id, exception_type: "followup_overdue", severity: "medium", details: "Follow-up noted but no recent encounter" });
+      await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "followup_overdue", severity: "medium", details: "Follow-up noted but no recent encounter" }, "%");
+    } else {
+      await resolveOpen(db, p.id, "followup_overdue");
     }
 
     // 5. Labs overdue (placeholder: encounter notes mention lab)
@@ -522,13 +582,20 @@ export async function runExceptionMonitor(env: Env) {
       `SELECT id, cycle_type, end_date FROM cycles
        WHERE patient_id = ? AND end_date IS NOT NULL AND end_date >= ? AND end_date <= date('now', '+14 days')`
     ).bind(p.id, today).all();
+    let hasEndingCycle = false;
     for (const cyc of endingCycle.results) {
+      hasEndingCycle = true;
       const reassessed = await db.prepare(
         "SELECT COUNT(*) AS n FROM encounters WHERE patient_id = ? AND occurred_at > ?"
       ).bind(p.id, cyc.end_date).first<{ n: number }>();
       if (!reassessed || reassessed.n === 0) {
-        created.push({ patient_id: p.id, exception_type: "cycle_ending_unreassessed", severity: "high", details: `Cycle ${cyc.cycle_type || ""} ends ${cyc.end_date} with no reassessment` });
+        await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "cycle_ending_unreassessed", severity: "high", details: `Cycle ${cyc.cycle_type || ""} ends ${cyc.end_date} with no reassessment` }, "%");
+      } else {
+        await resolveOpen(db, p.id, "cycle_ending_unreassessed");
       }
+    }
+    if (!hasEndingCycle) {
+      await resolveOpen(db, p.id, "cycle_ending_unreassessed");
     }
 
     // 7. Medication received but not confirmed
@@ -536,7 +603,9 @@ export async function runExceptionMonitor(env: Env) {
       "SELECT COUNT(*) AS n FROM medications WHERE patient_id = ? AND in_transit = 1 AND delivery_notes IS NULL"
     ).bind(p.id).first<{ n: number }>();
     if (unconfirmed && unconfirmed.n > 0) {
-      created.push({ patient_id: p.id, exception_type: "receipt_unconfirmed", severity: "low", details: "In-transit medication without delivery confirmation" });
+      await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "receipt_unconfirmed", severity: "low", details: "In-transit medication without delivery confirmation" }, "%");
+    } else {
+      await resolveOpen(db, p.id, "receipt_unconfirmed");
     }
 
     // 8. Assigned team task remains incomplete
@@ -544,7 +613,9 @@ export async function runExceptionMonitor(env: Env) {
       "SELECT COUNT(*) AS n FROM tasks WHERE patient_id = ? AND status IN ('open', 'overdue')"
     ).bind(p.id).first<{ n: number }>();
     if (openTasks && openTasks.n > 0) {
-      created.push({ patient_id: p.id, exception_type: "task_incomplete", severity: "low", details: `${openTasks.n} open task(s)` });
+      await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "task_incomplete", severity: "low", details: `${openTasks.n} open task(s)` }, "%");
+    } else {
+      await resolveOpen(db, p.id, "task_incomplete");
     }
   }
 
