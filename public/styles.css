@@ -88,3 +88,18 @@ body { font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Seg
 button:disabled { opacity: .5; cursor: not-allowed; }
 .loading { text-align: center; color: var(--muted); padding: 30px; }
 .footer-note { text-align: center; color: var(--muted); font-size: 12px; padding: 16px 0 32px; }
+
+/* ---- Feedback slide-out panel ---- */
+.feedback-panel { position: fixed; top: 0; right: 0; height: 100vh; z-index: 40; display: flex; flex-direction: row-reverse; transform: translateX(calc(100% - 40px)); transition: transform .25s ease; }
+.feedback-panel.open { transform: translateX(0); }
+.feedback-panel.closed { transform: translateX(calc(100% - 40px)); }
+
+.feedback-tab { position: absolute; left: 0; top: 120px; width: 40px; height: 160px; border: 1px solid var(--border); border-right: none; border-radius: 8px 0 0 8px; background: var(--card); cursor: pointer; display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; text-orientation: mixed; font-size: 12px; font-weight: 600; color: var(--text); padding: 12px 6px; box-shadow: -1px 1px 6px rgba(0,0,0,.08); z-index: 41; }
+.feedback-tab-label { display: block; text-align: center; display: block; white-space: pre; }
+
+.feedback-body { width: 380px; max-width: 90vw; height: 100vh; overflow-y: auto; background: var(--bg); border-left: 2px solid var(--orange); padding: 24px; box-shadow: -4px 0 20px rgba(0,0,0,.12); }
+.feedback-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.feedback-item { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+
+textarea, select, .field-input { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; font-family: inherit; resize: vertical; }
+textarea:focus, select:focus, .field-input:focus { outline: none; border-color: var(--orange); box-shadow: 0 0 0 2px rgba(255,99,45,.15); }

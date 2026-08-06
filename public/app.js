@@ -283,5 +283,68 @@ $("#btnSaveSettings").addEventListener("click", () => {
   }, 300);
 });
 
+// ---- Feedback panel (right slide-out) ----
+(function () {
+  const panel = $("#feedbackPanel");
+  const toggle = $("#feedbackToggle");
+  const close = $("#feedbackClose");
+  const btnSubmit = $("#btnSubmitFeedback");
+  const msg = $("#feedbackMsg");
+
+  toggle.addEventListener("click", () => {
+    panel.classList.toggle("open");
+    panel.classList.toggle("closed");
+    if (panel.classList.contains("open")) loadFeedback();
+  });
+  close.addEventListener("click", () => {
+    panel.classList.add("closed");
+    panel.classList.remove("open");
+  });
+
+  btnSubmit.addEventListener("click", async () => {
+    const body = $("#fbBody").value.trim();
+    if (!body) { toast("Please enter your feedback."); return; }
+    try {
+      await api("POST", "/feedback", {
+        submitted_by: $("#fbSubmittedBy").value.trim() || "anonymous",
+        category: $("#fbCategory").value,
+        body,
+      });
+      $("#fbBody").value = "";
+      msg.textContent = "✓ Submitted — thanks!";
+      setTimeout(() => (msg.textContent = ""), 3000);
+      loadFeedback();
+    } catch (e) {
+      msg.textContent = "Error: " + e.message;
+    }
+  });
+
+  async function loadFeedback() {
+    try {
+      const items = await api("GET", "/feedback");
+      const list = $("#feedbackList");
+      list.innerHTML = "";
+      if (items.length === 0) {
+        list.innerHTML = `<div class="muted small">No feedback yet. Be the first.</div>`;
+        return;
+      }
+      for (const f of items) {
+        const div = document.createElement("div");
+        div.className = "feedback-item";
+        const catLabel = f.category?.replace(/_/g, " ") || "idea";
+        div.innerHTML = `
+          <div class="row" style="margin-bottom:4px">
+            <span class="badge badge-low">${esc(catLabel)}</span>
+            <strong style="font-size:13px">${esc(f.body)}</strong>
+          </div>
+          <div class="muted small">${esc(f.submitted_by || "anonymous")} · ${esc(fmtDate(f.created_at))} · <span class="badge badge-muted">${esc(f.status)}</span></div>`;
+        list.appendChild(div);
+      }
+    } catch (e) {
+      $("#feedbackList").innerHTML = `<div class="muted small">${esc(e.message)}</div>`;
+    }
+  }
+})();
+
 // ---- Init ----
 loadDashboard();

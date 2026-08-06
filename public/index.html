@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=2" />
+  <link rel="stylesheet" href="/styles.css?v=3" />
 </head>
 <body>
   <header class="topbar">
@@ -101,12 +101,58 @@
         <p id="settingsMsg" class="muted small"></p>
       </div>
     </dialog>
+
+    <!-- FEEDBACK PANEL (right slide-out) -->
+    <aside id="feedbackPanel" class="feedback-panel closed">
+      <button id="feedbackToggle" class="feedback-tab" title="Feedback &amp; Input">
+        <span class="feedback-tab-label">💬 Feedback &amp; Input</span>
+      </button>
+      <div class="feedback-body">
+        <div class="feedback-head">
+          <h2 class="section-title">Feedback &amp; Input Capture</h2>
+          <button id="feedbackClose" class="btn btn-ghost" title="Close">✕</button>
+        </div>
+        <p class="muted small">Drive updates with plain sentences. Describe what changed, what broke, or what you need.</p>
+        <label class="field">
+          <span>Your name</span>
+          <input id="fbSubmittedBy" type="text" placeholder="optional" />
+        </label>
+        <label class="field">
+          <span>Category</span>
+          <select id="fbCategory" class="field-input">
+            <option value="feature_request">Feature request</option>
+            <option value="workflow_question">Workflow question</option>
+            <option value="bug">Bug / something broken</option>
+            <option value="idea">Idea</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>What do you need?*</span>
+          <textarea id="fbBody" rows="4" placeholder="e.g. Add a field for insurance info.  /  Show the medication list sorted by exhaust date.  /  Make the follow-up date configurable." required></textarea>
+        </label>
+        <button id="btnSubmitFeedback" class="btn btn-primary" style="width:100%">Submit feedback</button>
+        <div id="feedbackMsg" class="muted small" style="margin-top:8px"></div>
+        <hr style="margin:16px 0; border:none; border-top:1px solid var(--border)">
+        <template id="fbItemTemplate">
+          <div class="feedback-item">
+            <div class="row">
+              <span class="fb-category badge badge-low"></span>
+              <strong class="fb-body"></strong>
+            </div>
+            <div class="muted small"><span class="fb-by"></span> · <span class="fb-date"></span> · <span class="fb-status badge badge-muted"></span></div>
+          </div>
+        </template>
+        <div id="feedbackList" class="stack"></div>
+      </div>
+    </aside>
+
   </main>
 
   <div class="toast" id="toast" hidden></div>
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=4"></script>
+  <script src="/app.js?v=5"></script>
 </body>
 </html>

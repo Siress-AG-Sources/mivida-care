@@ -660,6 +660,59 @@ async function audit(
 }
 
 // ---------------------------------------------------------------------------
+// Feedback (team input capture — drive updates from plain sentences)
+// ---------------------------------------------------------------------------
+
+app.post("/feedback", async (c) => {
+  const body = await c.req.json();
+  if (!body.body || !body.body.trim()) {
+    return c.json({ error: "body is required" }, 400);
+  }
+  const result = await c.env.DB.prepare(
+    `INSERT INTO feedback (submitted_by, category, body, context, status)
+     VALUES (?, ?, ?, ?, 'new')`
+  )
+    .bind(
+      body.submitted_by || "anonymous",
+      body.category || "idea",
+      body.body.trim(),
+      body.context || null
+    )
+    .run();
+  await audit(c, "system", "feedback.create", "feedback", result.meta.last_row_id, null, body);
+  return c.json({ id: result.meta.last_row_id, status: "new" }, 201);
+});
+
+app.get("/feedback", async (c) => {
+  const status = c.req.query("status");
+  const category = c.req.query("category");
+  let query = "SELECT * FROM feedback WHERE 1=1";
+  const args: any[] = [];
+  if (status) { query += " AND status = ?"; args.push(status); }
+  if (category) { query += " AND category = ?"; args.push(category); }
+  query += " ORDER BY created_at DESC LIMIT 50";
+  const { results } = await c.env.DB.prepare(query).bind(...args).all();
+  return c.json(results);
+});
+
+app.patch("/feedback/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json();
+  const fields = Object.keys(body);
+  if (fields.length === 0) return c.json({ error: "no fields" }, 400);
+  const assignments: string[] = fields.map((f) => `${f} = ?`);
+  const values: unknown[] = fields.map((f) => body[f]);
+  assignments.push("updated_at = datetime('now')");
+  await c.env.DB.prepare(`UPDATE feedback SET ${assignments.join(", ")} WHERE id = ?`)
+    .bind(...values, id)
+    .run();
+  const updated = await c.env.DB.prepare("SELECT * FROM feedback WHERE id = ?")
+    .bind(id)
+    .first();
+  return c.json(updated);
+});
+
+// ---------------------------------------------------------------------------
 // Static assets + entrypoint
 // ---------------------------------------------------------------------------
 
