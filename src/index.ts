@@ -784,6 +784,54 @@ app.patch("/feedback/:id", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Deploy events (powers the "What's New" feed)
+// ---------------------------------------------------------------------------
+
+app.post("/deploy-events", async (c) => {
+  // Self-healing: ensure table exists (safe to run every time)
+  await c.env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS deploy_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      version TEXT,
+      summary TEXT NOT NULL,
+      details TEXT,
+      deployed_by TEXT DEFAULT 'ci',
+      live_url TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`
+  ).run();
+  await c.env.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_deploy_events_created ON deploy_events(created_at DESC)"
+  ).run().catch(() => {});
+
+  const body = await c.req.json();
+  if (!body.summary || !body.summary.trim()) {
+    return c.json({ error: "summary is required" }, 400);
+  }
+  const result = await c.env.DB.prepare(
+    `INSERT INTO deploy_events (version, summary, details, deployed_by, live_url)
+     VALUES (?, ?, ?, ?, ?)`
+  )
+    .bind(
+      body.version || null,
+      body.summary.trim(),
+      body.details || null,
+      body.deployed_by || "ci",
+      body.live_url || null
+    )
+    .run();
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+app.get("/deploy-events", async (c) => {
+  const limit = Math.min(Number(c.req.query("limit")) || 10, 50);
+  const { results } = await c.env.DB.prepare(
+    "SELECT * FROM deploy_events ORDER BY created_at DESC LIMIT ?"
+  ).bind(limit).all();
+  return c.json(results);
+});
+
+// ---------------------------------------------------------------------------
 // Static assets + entrypoint
 // ---------------------------------------------------------------------------
 

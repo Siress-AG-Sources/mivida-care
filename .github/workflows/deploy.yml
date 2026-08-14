@@ -1,0 +1,44 @@
+name: Deploy Mi Vida Health
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy to Cloudflare Workers
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Deploy with Wrangler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Notify deploy event
+        env:
+          TOKEN: ${{ secrets.MIVIDA_AUTH_TOKEN }}
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          SUMMARY=$(git log --oneline -1 "$SHA" 2>/dev/null || echo "deploy")
+          curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            --data-raw "{\"version\":\"$SHA\",\"summary\":\"$SUMMARY\",\"deployed_by\":\"ci\",\"live_url\":\"https://mivida.siress.workers.dev\"}" \
+            "https://mivida.siress.workers.dev/api/deploy-events"

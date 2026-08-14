@@ -347,4 +347,65 @@ $("#btnSaveSettings").addEventListener("click", () => {
 })();
 
 // ---- Init ----
-loadDashboard();
+(function init() {
+  loadDashboard();
+  loadDeployCount();
+})();
+
+// ---- What's New (deploy events) ----
+let lastDeploySeen = localStorage.getItem("mivida_last_deploy_id") || "0";
+
+async function loadDeployCount() {
+  try {
+    const events = await api("GET", "/deploy-events?limit=5");
+    const count = events.filter((e) => e.id > Number(lastDeploySeen)).length;
+    const badge = $("#deployCount");
+    if (count > 0) {
+      badge.textContent = count;
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  } catch (_) { /* silently ignore */ }
+}
+
+async function loadDeployEvents() {
+  try {
+    const events = await api("GET", "/deploy-events?limit=20");
+    const list = $("#deployEventsList");
+    if (events.length === 0) {
+      list.innerHTML = `<div class="muted small">No updates yet. Push code to see them here!</div>`;
+      return;
+    }
+    list.innerHTML = events
+      .map((e) => {
+        const isNew = e.id > Number(lastDeploySeen);
+        return `<div class="card"${isNew ? ' style="border-left:3px solid var(--orange)"' : ""}>
+          <div class="row" style="margin-bottom:4px">
+            <strong>${esc(e.summary)}</strong>
+            ${isNew ? '<span class="badge badge-medium" style="font-size:10px">NEW</span>' : ""}
+            <span class="muted small">${esc(e.deployed_by)}</span>
+          </div>
+          <div class="muted small">
+            ${esc(fmtDate(e.created_at))}
+            ${e.version ? '· <code style="font-size:11px">' + esc(e.version.slice(0, 7)) + "</code>" : ""}
+            ${e.live_url ? '· <a href="' + esc(e.live_url) + '" target="_blank" style="color:var(--orange)">view site →</a>' : ""}
+          </div>
+        </div>`;
+      })
+      .join("");
+    // Mark seen
+    if (events.length > 0) {
+      lastDeploySeen = String(events[0].id);
+      localStorage.setItem("mivida_last_deploy_id", lastDeploySeen);
+      loadDeployCount();
+    }
+  } catch (e) {
+    $("#deployEventsList").innerHTML = `<div class="card muted">${esc(e.message)}</div>`;
+  }
+}
+
+$("#btnWhatsNew").addEventListener("click", () => {
+  loadDeployEvents();
+  $("#whatsNewModal").showModal();
+});

@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=3" />
+  <link rel="stylesheet" href="/styles.css?v=4" />
 </head>
 <body>
   <header class="topbar">
@@ -18,6 +18,7 @@
       </div>
     </div>
     <div class="topbar-right">
+      <button id="btnWhatsNew" class="btn btn-ghost" title="What's New & updates">🎉 <span id="deployCount" class="badge-alert" hidden>0</span></button>
       <button id="btnSettings" class="btn btn-ghost" title="Connection settings">⚙︎ Settings</button>
       <span id="connStatus" class="badge badge-muted">disconnected</span>
     </div>
@@ -102,6 +103,20 @@
       </div>
     </dialog>
 
+    <!-- WHAT'S NEW MODAL (deploy announcements) -->
+    <dialog id="whatsNewModal" class="modal">
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2 class="section-title">🎉 What's New</h2>
+          <button class="btn btn-ghost" onclick="document.getElementById('whatsNewModal').close()">✕</button>
+        </div>
+        <p class="muted small">Every time you push code to GitHub, updates deploy automatically and appear here.</p>
+        <div id="deployEventsList" class="stack" style="margin-top:12px">
+          <div class="muted small loading">Loading...</div>
+        </div>
+      </div>
+    </dialog>
+
     <!-- FEEDBACK PANEL (right slide-out) -->
     <aside id="feedbackPanel" class="feedback-panel closed">
       <button id="feedbackToggle" class="feedback-tab" title="Feedback &amp; Input">
@@ -153,6 +168,6 @@
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=5"></script>
+  <script src="/app.js?v=6"></script>
 </body>
 </html>

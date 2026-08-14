@@ -1,0 +1,68 @@
+Subject: Mi Vida Health Care Platform — Live Update
+
+Hi [Friend],
+
+The workflow system we talked about is now live. You can start using it today.
+
+LINK:  https://mivida.siress.workers.dev
+
+WHAT THIS IS
+A clinical workflow platform built around the four questions we discussed:
+1. Who is this?
+2. What happened today?
+3. What is the workflow?
+4. What question are we trying to answer before the next visit?
+
+The system turns every verbal clinical decision into a written schedule and a
+dated workflow, then monitors continuity so nothing slips. It flags refills
+before they run out, follow-ups that are overdue, tasks that are incomplete,
+and prompts that haven't been completed.
+
+IMPORTANT: The AI never prescribes medication and never submits pharmacy
+orders. It only recognizes when a refill or new order is needed and hands you
+a prompt with all the information you need. You complete the order yourself in
+the pharmacy platform, exactly as we designed it.
+
+HOW TO LOG IN (30 seconds)
+1. Open the link above.
+2. Click the gear icon (Settings) in the top-right corner.
+3. Enter:
+   - API base URL:  https://mivida.siress.workers.dev
+   - Auth token:    [get from Tony]
+4. Click Save.
+
+WHAT YOU'LL SEE
+- OVERVIEW — a live status board for every patient: what they're taking now,
+  current cycle, when it ends, what comes next, days of medication on hand,
+  next order-by date, last meaningful contact, and any open exceptions.
+- PATIENTS — full patient list with membership level, treatment phase,
+  contact interval, and goals. Click any patient for a detailed view
+  (medications, cycle, refill prompts, tasks).
+- EXCEPTIONS — the attention list. Run it anytime with the button, and it
+  also runs automatically every morning at 06:30 UTC. It flags things like:
+  no contact for the expected interval, medication likely to run out within
+  two weeks, refill prompt not completed, labs overdue, cycle ending without
+  a reassessment, receipt not confirmed, incomplete team tasks.
+- REFILL PROMPTS — every generated refill prompt with all 10 fields: patient
+  name, DOB, phone, address, email, medication, current dose, quantity
+  needed, exhaustion date, order-by date, delivery notes.
+- FEEDBACK & INPUT (right-side tab) — this is the important one. If you want
+  something changed, added, or fixed, type it here in plain sentences. What
+  you submit goes straight into our iteration queue, and we turn it into a
+  system update. If a request isn't clear, we'll come back and ask.
+
+ABOUT THE EXCEPTION MONITOR
+Each exception appears once and stays until it's resolved — no duplicates.
+When a condition clears (patient contacted, refill ordered, task done), the
+system marks it resolved automatically. Your morning list will always be
+current and actionable.
+
+A NOTE ON ACCESS
+The link and token are shared access for our team only — anyone with the
+token can view and update patient data, so keep it within the practice.
+
+If anything feels wrong or you want something different, use the Feedback tab
+and tell us in your own words. That's the fastest way to shape the system.
+
+Best,
+[Your name]
