@@ -37,8 +37,10 @@ jobs:
         run: |
           SHA=$(git rev-parse --short HEAD)
           SUMMARY=$(git log --oneline -1 "$SHA" 2>/dev/null || echo "deploy")
+          LOG=$(git log --oneline HEAD~1..HEAD 2>/dev/null | head -20 || echo "$SUMMARY")
+          DETAILS=$(echo "$LOG" | python3 -c "import sys,json; print(json.dumps('\n'.join(l.strip() for l in sys.stdin if l.strip())))" 2>/dev/null || echo "")
           curl -s -X POST \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $TOKEN" \
-            --data-raw "{\"version\":\"$SHA\",\"summary\":\"$SUMMARY\",\"deployed_by\":\"ci\",\"live_url\":\"https://mivida.siress.workers.dev\"}" \
+            --data-raw "{\"version\":\"$SHA\",\"summary\":\"$SUMMARY\",\"details\":$DETAILS,\"deployed_by\":\"ci\",\"live_url\":\"https://mivida.siress.workers.dev\"}" \
             "https://mivida.siress.workers.dev/api/deploy-events"

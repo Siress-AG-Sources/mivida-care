@@ -19,6 +19,7 @@ type Env = {
   MIVIDA_AUTH_TOKEN: string; // bearer token for API access
   ADMIN_TOKEN: string; // admin-only bearer token
   GITHUB_TOKEN: string; // for creating issues from admin console
+  RESEND_API_KEY: string; // for sending deploy notification emails
   ENVIRONMENT: string; // dev | production
   SENDGRID_API_KEY?: string;
 };
@@ -932,6 +933,38 @@ app.post("/deploy-events", async (c) => {
       body.live_url || null
     )
     .run();
+
+  // Send email notification for auto-deploys
+  if (body.deployed_by === "ci" && c.env.RESEND_API_KEY) {
+    try {
+      const changes = body.details
+        ? body.details.replace(/^/gm, "  • ")
+        : "  • " + body.summary;
+      const emailPayload = {
+        from: "Mi Vida Health <mivida@agents.siress.net>",
+        to: ["mivida@agents.siress.net"],
+        subject: "🎉 Mi Vida Health — New update deployed",
+        html: `<div style="font-family:sans-serif;max-width:600px">
+          <h2 style="color:#0D2E37">🎉 New update live</h2>
+          <p style="color:#678188">${body.summary}</p>
+          <pre style="background:#f7f7f7;padding:12px;border-radius:8px;font-size:13px">${changes}</pre>
+          <p style="margin-top:16px">
+            <a href="https://mivida.siress.workers.dev" style="display:inline-block;background:#FF632D;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600">Open platform →</a>
+          </p>
+          <p class="muted small" style="color:#678188;font-size:12px">Mi Vida Health · concierge medicine · mivida.health</p>
+        </div>`,
+      };
+      await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${c.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(emailPayload),
+      });
+    } catch (_) { /* email is best-effort */ }
+  }
+
   return c.json({ id: result.meta.last_row_id }, 201);
 });
 
