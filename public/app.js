@@ -40,9 +40,23 @@ async function api(method, path, body) {
 
 function setConn(ok, label) {
   const el = $("#connStatus");
-  el.className = "badge " + (ok ? "badge-ok" : "badge-muted");
-  el.textContent = label || (ok ? "connected" : "disconnected");
+  el.className = "conn " + (ok ? "conn-ok" : "conn-off");
+  const lbl = el.querySelector(".conn-label");
+  if (lbl) lbl.textContent = label || (ok ? "online" : "offline");
 }
+
+// Brand logo → Overview
+function goHome() {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+  document.querySelector('.tab[data-view="dash"]').classList.add("active");
+  document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
+  $("#view-dash").classList.remove("hidden");
+  loadDashboard();
+}
+$("#brandHome").addEventListener("click", goHome);
+$("#brandHome").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goHome(); }
+});
 
 function toast(msg) {
   const t = $("#toast");
