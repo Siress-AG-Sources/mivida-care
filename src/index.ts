@@ -18,6 +18,7 @@ type Env = {
   DB: D1Database;
   MIVIDA_AUTH_TOKEN: string; // bearer token for API access
   ENVIRONMENT: string; // dev | production
+  SENDGRID_API_KEY?: string;
 };
 
 type Patient = {
@@ -31,6 +32,7 @@ type Patient = {
   goals: string | null;
   treatment_phase: string | null;
   expected_contact_interval_days: number;
+  insurance_info: string | null;
 };
 
 type Medication = {
@@ -45,6 +47,7 @@ type Medication = {
   order_by_date: string | null;
   in_transit: number | boolean;
   delivery_notes: string | null;
+  confirmed_at: string | null;
 };
 
 type Cycle = {
@@ -118,8 +121,8 @@ app.post("/patients", async (c) => {
   const result = await c.env.DB.prepare(
     `INSERT INTO patients
       (name, date_of_birth, phone, address, email, membership_level, goals,
-       treatment_phase, expected_contact_interval_days)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       treatment_phase, expected_contact_interval_days, insurance_info)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       body.name,
@@ -130,7 +133,8 @@ app.post("/patients", async (c) => {
       body.membership_level || null,
       body.goals || null,
       body.treatment_phase || null,
-      body.expected_contact_interval_days || 30
+      body.expected_contact_interval_days || 30,
+      body.insurance_info || null
     )
     .run();
   await audit(c, "system", "patient.create", "patients", result.meta.last_row_id, null, body);
@@ -598,12 +602,12 @@ export async function runExceptionMonitor(env: Env) {
       await resolveOpen(db, p.id, "cycle_ending_unreassessed");
     }
 
-    // 7. Medication received but not confirmed
+    // 7. Medication in transit but not confirmed (Nurse Ana's request)
     const unconfirmed = await db.prepare(
-      "SELECT COUNT(*) AS n FROM medications WHERE patient_id = ? AND in_transit = 1 AND delivery_notes IS NULL"
+      "SELECT COUNT(*) AS n FROM medications WHERE patient_id = ? AND in_transit = 1 AND confirmed_at IS NULL"
     ).bind(p.id).first<{ n: number }>();
     if (unconfirmed && unconfirmed.n > 0) {
-      await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "receipt_unconfirmed", severity: "low", details: "In-transit medication without delivery confirmation" }, "%");
+      await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "receipt_unconfirmed", severity: "medium", details: "In-transit medication awaiting receipt confirmation" }, "%");
     } else {
       await resolveOpen(db, p.id, "receipt_unconfirmed");
     }
@@ -707,6 +711,23 @@ app.get("/patients/:id/status", async (c) => {
     unresolved_exceptions: unresolvedExceptions,
     status_text: `Taking ${meds.map((m) => m.name).join(", ") || "—"}; cycle ${currentCycle?.cycle_type || "—"} ends ${currentCycle?.end_date?.slice(0, 10) || "—"}; ~${daysOnHand ?? "?"} days of meds on hand; next order by ${nextOrderBy || "—"}; last contact ${lastEncounter?.occurred_at?.slice(0, 10) || "never"}.`,
   });
+});
+
+app.patch("/patients/:id/medications/:mid/confirm", async (c) => {
+  const id = Number(c.req.param("id"));
+  const mid = Number(c.req.param("mid"));
+  const current = await c.env.DB.prepare("SELECT * FROM medications WHERE id = ? AND patient_id = ?")
+    .bind(mid, id)
+    .first();
+  if (!current) return c.json({ error: "not found" }, 404);
+  await c.env.DB.prepare(
+    "UPDATE medications SET in_transit = 0, confirmed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+  ).bind(mid).run();
+  await audit(c, "system", "medication.confirm", "medications", mid, current, { in_transit: 0, confirmed_at: new Date().toISOString() });
+  const updated = await c.env.DB.prepare("SELECT * FROM medications WHERE id = ?").bind(mid).first();
+  // Resolve receipt_unconfirmed exception for this patient
+  await resolveOpen(c.env.DB, id, "receipt_unconfirmed");
+  return c.json(updated);
 });
 
 // ---------------------------------------------------------------------------

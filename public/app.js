@@ -145,6 +145,7 @@ async function loadPatients() {
         <dl class="kv">
           <dt>Phase</dt><dd>${esc(p.treatment_phase || "—")}</dd>
           <dt>Contact interval</dt><dd>${esc(p.expected_contact_interval_days)} days</dd>
+          <dt>Insurance</dt><dd>${esc(p.insurance_info || "—")}</dd>
           <dt>Goals</dt><dd>${esc(p.goals || "—")}</dd>
         </dl>
         <span class="detail-link" data-patient="${p.id}">details →</span>`;
@@ -165,6 +166,7 @@ async function openPatient(id) {
       <dt>Status</dt><dd>${esc(st.status_text)}</dd>
       <dt>Membership</dt><dd>${esc(st.patient.membership_level || "—")}</dd>
       <dt>Phase</dt><dd>${esc(st.patient.treatment_phase || "—")}</dd>
+      <dt>Insurance</dt><dd>${esc(st.patient.insurance_info || "—")}</dd>
       <dt>Contact interval</dt><dd>${esc(st.patient.expected_contact_interval_days)} days</dd>
       <dt>Days on hand</dt><dd>${esc(st.days_on_hand)}</dd>
       <dt>Next order by</dt><dd>${esc(fmtDate(st.next_order_by))}</dd>
@@ -172,11 +174,13 @@ async function openPatient(id) {
     </dl>
     <h3 class="section-title" style="margin-top:16px">Medications</h3>
     ${(st.medications || []).map((m) => `
-      <div class="exception-item">
+      <div class="exception-item" id="med-${m.id}">
         <strong>${esc(m.name)}</strong> ${esc(m.dose || "")}
         <div class="muted small">
           exhausts ${esc(fmtDate(m.estimated_exhaustion_date))} · order by ${esc(fmtDate(m.order_by_date))}
           · quantity ${esc(m.quantity ?? "?")} · ${m.in_transit ? "in transit" : "on hand"}
+          ${m.confirmed_at ? `· confirmed ${esc(fmtDate(m.confirmed_at))}` : ""}
+          ${!m.confirmed_at && m.in_transit ? `<button class="btn btn-sm btn-primary confirm-btn" style="margin-left:8px" data-pid="${st.patient.id}" data-mid="${m.id}">✓ Confirm receipt</button>` : ""}
         </div>
       </div>`).join("") || `<div class="muted">No medications.</div>`}
     <h3 class="section-title" style="margin-top:16px">Current cycle</h3>
@@ -408,4 +412,57 @@ async function loadDeployEvents() {
 $("#btnWhatsNew").addEventListener("click", () => {
   loadDeployEvents();
   $("#whatsNewModal").showModal();
+});
+
+// ---- Add patient (intake form) ----
+$("#btnAddPatient").addEventListener("click", () => {
+  $("#apMsg").textContent = "";
+  document.querySelectorAll("#addPatientModal input, #addPatientModal textarea, #addPatientModal select").forEach((el) => {
+    if (el.id !== "apInterval") el.value = "";
+  });
+  $("#apInterval").value = "30";
+  $("#addPatientModal").showModal();
+});
+
+$("#btnSavePatient").addEventListener("click", async () => {
+  const name = $("#apName").value.trim();
+  if (!name) { $("#apMsg").textContent = "Name is required."; return; }
+  try {
+    await api("POST", "/patients", {
+      name,
+      date_of_birth: $("#apDob").value || null,
+      email: $("#apEmail").value.trim() || null,
+      phone: $("#apPhone").value.trim() || null,
+      address: $("#apAddress").value.trim() || null,
+      insurance_info: $("#apInsurance").value.trim() || null,
+      membership_level: $("#apMembership").value || null,
+      treatment_phase: $("#apPhase").value || null,
+      expected_contact_interval_days: Number($("#apInterval").value) || 30,
+      goals: $("#apGoals").value.trim() || null,
+    });
+    $("#addPatientModal").close();
+    toast("Patient added!");
+    loadPatients();
+  } catch (e) {
+    $("#apMsg").textContent = "Error: " + e.message;
+  }
+});
+
+// ---- Confirm receipt (delegated click on patient modal) ----
+$("#patientModal").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".confirm-btn");
+  if (!btn) return;
+  const pid = btn.dataset.pid;
+  const mid = btn.dataset.mid;
+  btn.disabled = true;
+  btn.textContent = "Confirming...";
+  try {
+    await api("PATCH", `/patients/${pid}/medications/${mid}/confirm`);
+    toast("Receipt confirmed!");
+    openPatient(Number(pid)); // refresh detail view
+  } catch (err) {
+    toast("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = "✓ Confirm receipt";
+  }
 });

@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=4" />
+  <link rel="stylesheet" href="/styles.css?v=5" />
 </head>
 <body>
   <header class="topbar">
@@ -46,7 +46,10 @@
     <!-- PATIENTS -->
     <section id="view-patients" class="view hidden">
       <div class="card">
-        <h2 class="section-title">Patients</h2>
+        <div class="card-head">
+          <h2 class="section-title">Patients</h2>
+          <button id="btnAddPatient" class="btn btn-primary btn-sm">+ Add patient</button>
+        </div>
         <div id="patientsList" class="stack"></div>
       </div>
     </section>
@@ -100,6 +103,45 @@
           <button id="btnSaveSettings" class="btn btn-primary">Save</button>
         </div>
         <p id="settingsMsg" class="muted small"></p>
+      </div>
+    </dialog>
+
+    <!-- ADD PATIENT MODAL (intake form) -->
+    <dialog id="addPatientModal" class="modal">
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2 class="section-title">Add patient</h2>
+          <button class="btn btn-ghost" onclick="document.getElementById('addPatientModal').close()">✕</button>
+        </div>
+        <label class="field"><span>Full name*</span><input id="apName" type="text" placeholder="e.g. Jane Doe" /></label>
+        <label class="field"><span>Date of birth</span><input id="apDob" type="date" /></label>
+        <label class="field"><span>Email</span><input id="apEmail" type="email" placeholder="patient@example.com" /></label>
+        <label class="field"><span>Phone</span><input id="apPhone" type="tel" placeholder="+1 555 123 4567" /></label>
+        <label class="field"><span>Address</span><input id="apAddress" type="text" placeholder="Street, City, State, ZIP" /></label>
+        <label class="field"><span>Insurance info</span><input id="apInsurance" type="text" placeholder="Provider / policy / group number" /></label>
+        <label class="field"><span>Membership level</span>
+          <select id="apMembership" class="field-input">
+            <option value="">— select —</option>
+            <option value="standard">Standard</option>
+            <option value="premium">Premium</option>
+            <option value="concierge">Concierge</option>
+          </select>
+        </label>
+        <label class="field"><span>Treatment phase</span>
+          <select id="apPhase" class="field-input">
+            <option value="">— select —</option>
+            <option value="intake">Intake</option>
+            <option value="active">Active treatment</option>
+            <option value="maintenance">Maintenance</option>
+            <option value="follow-up">Follow-up</option>
+          </select>
+        </label>
+        <label class="field"><span>Contact interval (days)</span><input id="apInterval" type="number" value="30" min="1" /></label>
+        <label class="field"><span>Goals / notes</span><textarea id="apGoals" rows="3" placeholder="Treatment goals, notes"></textarea></label>
+        <div class="row-end">
+          <button id="btnSavePatient" class="btn btn-primary">Save patient</button>
+        </div>
+        <p id="apMsg" class="muted small"></p>
       </div>
     </dialog>
 
@@ -168,6 +210,6 @@
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=6"></script>
+  <script src="/app.js?v=7"></script>
 </body>
 </html>
