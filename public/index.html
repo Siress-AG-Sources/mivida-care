@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=5" />
+  <link rel="stylesheet" href="/styles.css?v=6" />
 </head>
 <body>
   <header class="topbar">
@@ -29,6 +29,7 @@
     <button class="tab" data-view="patients">Patients</button>
     <button class="tab" data-view="exceptions">Exceptions</button>
     <button class="tab" data-view="refills">Refill prompts</button>
+    <button class="tab tab-admin" data-view="admin">🔐 Admin</button>
   </nav>
 
   <main id="main" class="container">
@@ -70,6 +71,51 @@
       <div class="card">
         <h2 class="section-title">Refill prompts</h2>
         <div id="refillsList" class="stack"></div>
+      </div>
+    </section>
+
+    <!-- ADMIN -->
+    <section id="view-admin" class="view hidden">
+      <!-- Admin login prompt (shown when not authenticated) -->
+      <div id="adminLogin" class="card" style="max-width:400px;margin:40px auto">
+        <h2 class="section-title">🔐 Admin console</h2>
+        <p class="muted small">Enter the admin token to manage feedback and approve features.</p>
+        <label class="field" style="margin-top:12px">
+          <span>Admin token</span>
+          <input id="adminTokenInput" type="password" placeholder="mivida_admin_..." />
+        </label>
+        <div class="row-end">
+          <button id="btnAdminLogin" class="btn btn-primary">Unlock</button>
+        </div>
+        <p id="adminLoginMsg" class="muted small"></p>
+      </div>
+
+      <!-- Admin dashboard (shown when authenticated) -->
+      <div id="adminPanel" class="hidden">
+        <div class="grid-3" id="adminStats"></div>
+        <div class="card-head" style="margin-bottom:12px">
+          <h2 class="section-title">Feedback queue</h2>
+          <div class="row">
+            <select id="adminFilterStatus" class="field-input" style="width:auto">
+              <option value="">All statuses</option>
+              <option value="new">New</option>
+              <option value="reviewed">Reviewed</option>
+              <option value="planned">Planned</option>
+              <option value="in_progress">In progress</option>
+              <option value="done">Done</option>
+              <option value="declined">Declined</option>
+            </select>
+            <select id="adminFilterCategory" class="field-input" style="width:auto">
+              <option value="">All categories</option>
+              <option value="feature_request">Feature request</option>
+              <option value="workflow_question">Workflow question</option>
+              <option value="bug">Bug</option>
+              <option value="idea">Idea</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+        </div>
+        <div id="adminFeedbackList" class="stack"></div>
       </div>
     </section>
 
@@ -210,6 +256,6 @@
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=7"></script>
+  <script src="/app.js?v=8"></script>
 </body>
 </html>

@@ -17,6 +17,8 @@ import type { ExecutionContext } from "@cloudflare/workers-types";
 type Env = {
   DB: D1Database;
   MIVIDA_AUTH_TOKEN: string; // bearer token for API access
+  ADMIN_TOKEN: string; // admin-only bearer token
+  GITHUB_TOKEN: string; // for creating issues from admin console
   ENVIRONMENT: string; // dev | production
   SENDGRID_API_KEY?: string;
 };
@@ -73,11 +75,16 @@ app.use("*", async (c, next) => {
   c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 });
 
-// Simple bearer auth gate (skips health/debug)
+// Simple bearer auth gate (skips health/debug and admin paths)
 app.use("*", async (c, next) => {
   if (c.req.method === "OPTIONS") return next();
-  const path = new URL(c.req.url).pathname;
+  const url = new URL(c.req.url);
+  const path = url.pathname;
   if (path === "/health" || path === "/debug") return next();
+  // Admin routes have their own auth gate
+  if (path.startsWith("/admin")) return next();
+  // Admin routes also accessible via /api prefix
+  if (url.pathname.startsWith("/api/admin")) return next();
   const expected = c.env.MIVIDA_AUTH_TOKEN;
   const auth = c.req.header("Authorization") || "";
   if (!expected || auth !== `Bearer ${expected}`) {
@@ -85,6 +92,16 @@ app.use("*", async (c, next) => {
   }
   return next();
 });
+
+// Admin bearer auth gate
+async function adminAuth(c: any, next: any) {
+  const auth = c.req.header("Authorization") || "";
+  const token = c.env.ADMIN_TOKEN;
+  if (!token || auth !== `Bearer ${token}`) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  return next();
+}
 
 // Health check (no auth required — useful for debugging binding issues)
 app.get("/health", (c) => c.json({ ok: true, env: c.env.ENVIRONMENT }));
@@ -750,6 +767,80 @@ async function audit(
     .bind(actor, action, entityType, entityId, before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null)
     .run();
 }
+
+// ---------------------------------------------------------------------------
+// Admin console — feedback management + GitHub issue creation
+// ---------------------------------------------------------------------------
+
+app.get("/admin/feedback", adminAuth, async (c) => {
+  const status = c.req.query("status");
+  const category = c.req.query("category");
+  let query = "SELECT f.*, COALESCE(f.notes, '') AS notes_text FROM feedback f WHERE 1=1";
+  const args: any[] = [];
+  if (status) { query += " AND f.status = ?"; args.push(status); }
+  if (category) { query += " AND f.category = ?"; args.push(category); }
+  query += " ORDER BY f.created_at DESC LIMIT 100";
+  const { results } = await c.env.DB.prepare(query).bind(...args).all();
+  return c.json(results);
+});
+
+app.patch("/admin/feedback/:id", adminAuth, async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json();
+  const fields = Object.keys(body).filter((k) => k !== "action");
+  if (fields.length === 0) return c.json({ error: "no fields" }, 400);
+  const assignments = fields.map((f) => `${f} = ?`);
+  const values = fields.map((f) => body[f]);
+  assignments.push("updated_at = datetime('now')");
+  await c.env.DB.prepare(`UPDATE feedback SET ${assignments.join(", ")} WHERE id = ?`)
+    .bind(...values, id)
+    .run();
+
+  // If action is "approve", create a GitHub issue
+    if (body.action === "approve" || body.status === "in_progress") {
+      const item = await c.env.DB.prepare("SELECT * FROM feedback WHERE id = ?").bind(id).first() as any;
+      if (item) {
+        const title = `[MiVida] ${String(item.category || "Feature").replace(/_/g, " ")}: ${String(item.body).slice(0, 80)}`;
+        const desc = `**Submitted by:** ${item.submitted_by || "anonymous"}\n**Category:** ${item.category || "idea"}\n**Status:** in_progress\n\n**Request:**\n${item.body}\n\n${item.context ? `**Context:** ${item.context}\n` : ""}---\n_Approved via Mi Vida Admin Console_`;
+
+        try {
+          const gh = await fetch(
+            "https://api.github.com/repos/Siress-AG-Sources/mivida-care/issues",
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${c.env.GITHUB_TOKEN}`,
+                "Content-Type": "application/json",
+                "Accept": "application/vnd.github.v3+json",
+              },
+              body: JSON.stringify({ title, body: desc, labels: ["feedback"] }),
+            }
+          );
+          const ghResult: any = await gh.json();
+          if (gh.ok && ghResult.html_url) {
+            await c.env.DB.prepare(
+              "UPDATE feedback SET notes = COALESCE(notes || '\n', '') || ?, updated_at = datetime('now') WHERE id = ?"
+            ).bind(`GitHub: ${ghResult.html_url}`, id).run();
+          }
+        } catch (_) { /* skip if issue creation fails */ }
+      }
+    }
+
+  const updated = await c.env.DB.prepare("SELECT * FROM feedback WHERE id = ?").bind(id).first();
+  return c.json(updated);
+});
+
+// Stats for admin dashboard
+app.get("/admin/stats", adminAuth, async (c) => {
+  const total = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM feedback").first<{ n: number }>();
+  const byStatus = (await c.env.DB.prepare(
+    "SELECT status, COUNT(*) AS n FROM feedback GROUP BY status"
+  ).all()).results;
+  const byCategory = (await c.env.DB.prepare(
+    "SELECT category, COUNT(*) AS n FROM feedback GROUP BY category"
+  ).all()).results;
+  return c.json({ total: total?.n || 0, by_status: byStatus, by_category: byCategory });
+});
 
 // ---------------------------------------------------------------------------
 // Feedback (team input capture — drive updates from plain sentences)

@@ -259,7 +259,8 @@ async function loadRefills() {
           <dt>Exhausts</dt><dd>${esc(fmtDate(r.estimated_exhaustion_date))}</dd>
           <dt>Order by</dt><dd>${esc(fmtDate(r.order_by_date))}</dd>
           <dt>Delivery</dt><dd>${esc(r.delivery_notes || "—")}</dd>
-        </dl>`;
+        </dl>
+        ${r.status !== "completed" ? `<button class="btn btn-sm btn-primary refill-complete" data-id="${r.id}" style="margin-top:4px">✔ Mark completed</button>` : `<div class="muted small" style="margin-top:4px">✓ Completed ${r.completed_at ? esc(fmtDate(r.completed_at)) : ""}</div>`}`;
       list.appendChild(item);
     }
   } catch (e) {
@@ -466,3 +467,146 @@ $("#patientModal").addEventListener("click", async (e) => {
     btn.textContent = "✓ Confirm receipt";
   }
 });
+
+// ---- Refill complete button (delegated) ----
+$("#refillsList").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".refill-complete");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  btn.disabled = true;
+  btn.textContent = "Marking...";
+  try {
+    await api("PATCH", "/refill-prompts/" + id, { status: "completed" });
+    toast("Refill marked complete!");
+    loadRefills();
+  } catch (err) {
+    toast("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = "✔ Mark completed";
+  }
+});
+
+// ---- Admin console ----
+let adminToken = localStorage.getItem("mivida_admin_token") || "";
+
+function adminApi(method, path, body) {
+  const base = state.baseUrl.replace(/\/$/, "");
+  const prefix = base ? base + "/api" : "/api";
+  return fetch(prefix + "/admin" + path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(adminToken ? { Authorization: "Bearer " + adminToken } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  }).then((r) => {
+    if (r.status === 401) throw new Error("Invalid admin token");
+    if (!r.ok) return r.text().then((t) => { throw new Error(t || r.statusText); });
+    return r.json();
+  });
+}
+
+async function loadAdminStats() {
+  try {
+    const stats = await adminApi("GET", "/stats");
+    const box = $("#adminStats");
+    let html = `<div class="card stat-card"><p class="stat-label">Total feedback</p><p class="stat-value">${stats.total}</p></div>`;
+    if (stats.by_status) {
+      for (const s of stats.by_status) {
+        html += `<div class="card stat-card"><p class="stat-label">${esc(s.status || "?")}</p><p class="stat-value">${s.n}</p></div>`;
+      }
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    $("#adminStats").innerHTML = `<div class="card muted">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadAdminFeedback() {
+  try {
+    const status = $("#adminFilterStatus").value;
+    const category = $("#adminFilterCategory").value;
+    let path = "/feedback";
+    const qs = [];
+    if (status) qs.push("status=" + encodeURIComponent(status));
+    if (category) qs.push("category=" + encodeURIComponent(category));
+    if (qs.length) path += "?" + qs.join("&");
+    const items = await adminApi("GET", path);
+    const list = $("#adminFeedbackList");
+    if (!items || items.length === 0) {
+      list.innerHTML = `<div class="card muted">No feedback matches the filter.</div>`;
+      return;
+    }
+    list.innerHTML = items.map((f) => {
+      const isNew = f.status === "new";
+      const notes = f.notes || "";
+      const hasGh = notes.indexOf("GitHub:") !== -1;
+      const ghUrl = hasGh ? notes.split("GitHub: ")[1]?.split("\n")[0] : null;
+      return `<div class="card"${isNew ? ' style="border-left:3px solid var(--orange)"' : ""}>
+        <div class="row" style="margin-bottom:4px">
+          <span class="badge badge-low">${esc(f.category || "idea")}</span>
+          <strong>${esc(f.body)}</strong>
+          <span class="badge badge-${f.status === "done" ? "ok" : f.status === "new" ? "medium" : "muted"}">${esc(f.status)}</span>
+        </div>
+        <div class="muted small" style="margin-bottom:8px">
+          ${esc(f.submitted_by || "anonymous")} · ${fmtDate(f.created_at)}
+          ${ghUrl ? `· <a href="${esc(ghUrl)}" target="_blank" style="color:var(--orange)">GitHub ↗</a>` : ""}
+        </div>
+        ${notes && !hasGh ? `<div class="muted small" style="margin-bottom:4px">📝 ${esc(notes)}</div>` : ""}
+        <div class="row" style="gap:4px">
+          ${f.status !== "in_progress" && f.status !== "done" && f.status !== "declined" ? `<button class="btn btn-primary btn-sm admin-approve" data-id="${f.id}">✅ Approve</button>` : ""}
+          ${f.status !== "done" && f.status !== "declined" ? `<button class="btn btn-sm admin-done" data-id="${f.id}" style="background:#2e8b57;color:#fff;border-color:#2e8b57">✔ Done</button>` : ""}
+          ${f.status !== "declined" ? `<button class="btn btn-sm admin-decline" data-id="${f.id}" style="background:#cf2e2e;color:#fff;border-color:#cf2e2e">✕ Decline</button>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    $("#adminFeedbackList").innerHTML = `<div class="card muted">${esc(e.message)}</div>`;
+  }
+}
+
+async function adminAction(id, action, status) {
+  try {
+    const body = { status };
+    if (action === "approve") body.action = "approve";
+    await adminApi("PATCH", "/feedback/" + id, body);
+    toast(action === "approve" ? "Approved! GitHub issue created." : "Updated!");
+    loadAdminStats();
+    loadAdminFeedback();
+  } catch (e) {
+    toast("Error: " + e.message);
+  }
+}
+
+$("#adminFeedbackList").addEventListener("click", (e) => {
+  const id = e.target.dataset.id;
+  if (!id) return;
+  if (e.target.classList.contains("admin-approve")) adminAction(id, "approve", "in_progress");
+  else if (e.target.classList.contains("admin-done")) adminAction(id, "done", "done");
+  else if (e.target.classList.contains("admin-decline")) adminAction(id, "decline", "declined");
+});
+
+$("#btnAdminLogin").addEventListener("click", () => {
+  const token = $("#adminTokenInput").value.trim();
+  if (!token) { $("#adminLoginMsg").textContent = "Enter the admin token."; return; }
+  adminToken = token;
+  localStorage.setItem("mivida_admin_token", token);
+  $("#adminLogin").classList.add("hidden");
+  $("#adminPanel").classList.remove("hidden");
+  loadAdminStats();
+  loadAdminFeedback();
+});
+
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    if (tab.dataset.view === "admin" && adminToken) {
+      $("#adminLogin").classList.add("hidden");
+      $("#adminPanel").classList.remove("hidden");
+      loadAdminStats();
+      loadAdminFeedback();
+    }
+  });
+});
+
+$("#adminFilterStatus").addEventListener("change", loadAdminFeedback);
+$("#adminFilterCategory").addEventListener("change", loadAdminFeedback);
