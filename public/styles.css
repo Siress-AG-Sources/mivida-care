@@ -198,7 +198,10 @@ textarea:focus, select:focus, .field-input:focus { outline: none; border-color: 
   .kv { grid-template-columns: 1fr; gap: 0; font-size: 14px; }
   .kv dt { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; margin-top: 10px; }
   .kv dt:first-of-type { margin-top: 0; }
-  .kv dd { margin-bottom: 2px; }
+  /* Emails, street addresses and policy numbers are long unbroken tokens —
+     let them break rather than widen the card. */
+  .kv dd { margin-bottom: 2px; overflow-wrap: anywhere; }
+  .card p, .card strong, .card .small, .feedback-item { overflow-wrap: break-word; }
 
   /* "details →" becomes a real row-wide tap target */
   .detail-link {
@@ -251,7 +254,20 @@ textarea:focus, select:focus, .field-input:focus { outline: none; border-color: 
   /* ---- Feedback slide-out: full-width sheet + floating handle ----
      The panel parks fully off-screen (no sliver of the form bleeding over
      the board) and its handle becomes a thumb-height FAB in the corner. */
-  .feedback-body { width: 100vw; max-width: 100vw; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); }
+  .feedback-body { width: 100vw; max-width: 100vw; padding: 0 16px calc(20px + env(safe-area-inset-bottom)); }
+  /* Above the sticky top bar (z 60) and tabs (z 50) — otherwise the panel's
+     own header and its ✕ sit behind them and the sheet cannot be closed. */
+  .feedback-panel { z-index: 70; }
+  .feedback-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg);
+    padding: calc(16px + env(safe-area-inset-top)) 0 10px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .feedback-head .btn-ghost { min-width: 44px; min-height: 44px; padding: 0; font-size: 18px; color: var(--text); }
   .feedback-panel,
   .feedback-panel.closed { transform: translateX(100%); }
   .feedback-panel.open { transform: translateX(0); }
