@@ -62,7 +62,7 @@ body { font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Seg
 .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
 .view.hidden { display: none; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
-@media (max-width: 700px) { .grid-3 { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .grid-3 { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } }
 
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin-bottom: 16px; }
 .card-head { display: flex; justify-content: space-between; align-items: center; }
@@ -133,3 +133,154 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 
 textarea, select, .field-input { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; font-family: inherit; resize: vertical; }
 textarea:focus, select:focus, .field-input:focus { outline: none; border-color: var(--orange); box-shadow: 0 0 0 2px rgba(254,99,45,.15); }
+
+/* =====================================================================
+   PHONE LAYOUT  (<= 640px — covers iPhone 390x844 and 430x932)
+   Colors are inherited from the brand tokens above; nothing is recolored
+   here. This block only changes size, flow, and touch ergonomics.
+   ===================================================================== */
+@media (max-width: 640px) {
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-size: 15px; }
+
+  /* ---- Top bar: fixed 56px, brand never wraps ---- */
+  .topbar { height: 56px; padding: 0 14px; gap: 10px; }
+  .brand { gap: 10px; padding: 4px 6px; margin-left: -6px; min-width: 0; flex: 1 1 auto; }
+  .brand-text { min-width: 0; }
+  .logo { width: 32px; height: 32px; border-radius: 9px; font-size: 16px; }
+  .brand-name { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tagline { display: none; }
+  .topbar-right { flex: none; gap: 2px; }
+
+  /* Connection pill: dot + accessible-only label on the narrowest phones */
+  .conn { padding: 6px 10px; font-size: 11px; }
+
+  /* ---- Tabs: horizontal scroller instead of an overflowing row ---- */
+  .tabs {
+    top: 56px;
+    padding: 0 12px;
+    gap: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    padding: 0 14px;
+    min-height: 48px;
+    scroll-snap-align: start;
+  }
+  /* Admin no longer pushed to the far right — it just follows the others */
+  .tab-admin { margin-left: 0; }
+  .tab-admin::before { margin-right: 12px; }
+
+  /* ---- Content ---- */
+  .container { padding: 16px 14px 24px; }
+  .card { padding: 14px; }
+  .card-head { flex-wrap: wrap; gap: 8px; }
+  .section-title { font-size: 15px; }
+
+  /* Stat cards stay 3-across but compact, so the board is above the fold */
+  .grid-3 { grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 20px; }
+  .stat-card { padding: 12px 6px; }
+  .stat-label { font-size: 11px; letter-spacing: .01em; line-height: 1.25; }
+  .stat-value { font-size: 24px; margin-top: 2px; }
+  /* Admin stat strip can hold many cards — let it reflow instead */
+  #adminStats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+
+  /* Key/value pairs stack: long values (goals, insurance) get full width */
+  .kv { grid-template-columns: 1fr; gap: 0; font-size: 14px; }
+  .kv dt { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; margin-top: 10px; }
+  .kv dt:first-of-type { margin-top: 0; }
+  .kv dd { margin-bottom: 2px; }
+
+  /* "details →" becomes a real row-wide tap target */
+  .detail-link {
+    float: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-height: 44px;
+    margin-top: 4px;
+    border-top: 1px solid var(--border);
+    padding-top: 4px;
+  }
+  .card-head .detail-link { border-top: none; min-height: 44px; margin-top: 0; padding-top: 0; padding-left: 12px; }
+
+  /* ---- Touch targets: 44px minimum ---- */
+  .btn { min-height: 44px; padding: 10px 16px; font-size: 15px; }
+  .btn-sm { min-height: 44px; padding: 10px 14px; font-size: 14px; }
+  .icon-btn { width: 44px; height: 44px; }
+  .row-end .btn { width: 100%; }
+  .row-end { margin-top: 16px; }
+
+  /* ---- Inputs: 16px so iOS never zooms on focus ---- */
+  .field input, textarea, select, .field-input, input[type="text"], input[type="password"],
+  input[type="email"], input[type="tel"], input[type="date"], input[type="number"] {
+    font-size: 16px;
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+  textarea { min-height: 88px; }
+  .field { margin-bottom: 14px; }
+  .field span { font-size: 12px; margin-bottom: 6px; }
+
+  /* ---- Modals become bottom sheets (thumb-reachable) ---- */
+  .modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: 92vh;
+    margin: 0;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    border-radius: 16px 16px 0 0;
+  }
+  .modal-body { padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); }
+  .modal-head { margin-bottom: 16px; }
+  .modal-head .btn-ghost { min-width: 44px; min-height: 44px; padding: 0; font-size: 18px; }
+  #adminLogin { margin: 16px auto !important; max-width: 100% !important; }
+
+  /* ---- Feedback slide-out: full-width sheet + floating handle ----
+     The panel parks fully off-screen (no sliver of the form bleeding over
+     the board) and its handle becomes a thumb-height FAB in the corner. */
+  .feedback-body { width: 100vw; max-width: 100vw; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); }
+  .feedback-panel,
+  .feedback-panel.closed { transform: translateX(100%); }
+  .feedback-panel.open { transform: translateX(0); }
+  .feedback-tab {
+    left: -56px;
+    top: auto;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    writing-mode: horizontal-tb;
+    box-shadow: 0 2px 10px rgba(13, 46, 55, .22);
+  }
+  .feedback-panel.open .feedback-tab { opacity: 0; pointer-events: none; }
+  .feedback-tab-label { font-size: 0; line-height: 0; }
+  .feedback-tab-label::before { content: "💬"; font-size: 20px; line-height: 1; }
+
+  .footer-note { padding: 16px 16px 28px; word-break: break-word; }
+  .toast { left: 14px; right: 14px; transform: none; text-align: center; }
+}
+
+/* Narrowest phones (iPhone 390 and below): the connection pill keeps the
+   dot but drops the word, so the brand and icon buttons never collide. */
+@media (max-width: 420px) {
+  .conn { padding: 8px; gap: 0; border-radius: 999px; }
+  .conn-label {
+    position: absolute; width: 1px; height: 1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+}
