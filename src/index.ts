@@ -949,7 +949,7 @@ app.post("/deploy-events", async (c) => {
           <p style="color:#678188">${body.summary}</p>
           <pre style="background:#f7f7f7;padding:12px;border-radius:8px;font-size:13px">${changes}</pre>
           <p style="margin-top:16px">
-            <a href="https://mivida.siress.workers.dev" style="display:inline-block;background:#FF632D;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600">Open platform →</a>
+            <a href="https://mivida.siress.workers.dev" style="display:inline-block;background:#FE632D;color:#0D2E37;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600">Open platform →</a>
           </p>
           <p class="muted small" style="color:#678188;font-size:12px">Mi Vida Health · concierge medicine · mivida.health</p>
         </div>`,

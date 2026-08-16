@@ -4,10 +4,28 @@ Source: "Work Flow Note to Tony Siress.docx" (22 July 2026)
 Working directory: ~/Sites/mivida
 Brand: Mi Vida Health (mivida.health) — concierge medicine; clinical
   compounding pharmacists as core team; virtual services; 200+ languages.
-  Palette (measured from live site): dark teal-green #0D2E37 (headings/button
-  text), bright orange #FF632D (buttons), mint/cream #DBE7E6 and #DCF5F2
-  (secondary buttons, cards, section backgrounds), gray-teal body #678188,
-  off-white bg #F7F7F7. Font: Plus Jakarta Sans.
+  Palette — verified Aug 2026 by reading getComputedStyle on mivida.health and
+  grepping all 80 of its live stylesheets (hit counts in parens). Source of
+  truth is public/styles.css :root; change colors there and nowhere else.
+    #0D2E37 (32) dark teal — headings AND the text ON orange/tan/mint buttons
+    #FE632D  (9) orange — CTA background and link color. NOTE: #FE632D, not
+                 #FF632D; the FF variant appears only in one inline Elementor
+                 style, the theme's own token is FE.
+    #DBE7E6  (7) mint — secondary button, card and section backgrounds
+    #D2B48C  (7) tan — accent word ("Our Priority"), brand highlight
+    #678188  (6) gray-teal — body copy
+    #8AA7B0  (6, inline) soft blue-gray — tertiary text, footer
+    #F7F7F7  (5) off-white — page background (header and footer sit on this)
+    #1B3A42  (4) deep teal — hero band / dark chrome
+    #066AAB  (4) blue — form submit button
+    #E3C59E  (computed) sand — primary "Make an Appointment" CTA background
+    #DCF5F2  (2) pale mint — tinted panels
+    #D63637  (1) red — errors
+  Font: Plus Jakarta Sans throughout (weights 400/600/700; 600 dominates).
+  Usage rule that matters more than the hexes: orange is an ACTION color
+  (buttons, links) only. Structural accents — card rules, panel edges, the
+  logo tile — are tan/sand. The live site is a light #F7F7F7 page with a deep
+  teal hero, not an orange-accented dark UI.
   Services: Mental Health, Sexual Wellness, Hormone Replacement, Weight Loss,
   Pharmacist Services, Nutritional Supplementation.
 
