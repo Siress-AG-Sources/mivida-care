@@ -79,9 +79,18 @@ app.use("*", async (c, next) => {
 
 // Simple bearer auth gate (skips health/debug and admin paths)
 app.use("*", async (c, next) => {
-  if (c.req.method === "OPTIONS") return next();
   const url = new URL(c.req.url);
   const path = url.pathname;
+
+  // Handle CORS preflight
+  if (c.req.method === "OPTIONS") {
+    c.header("Access-Control-Allow-Origin", "*");
+    c.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    c.header("Access-Control-Max-Age", "86400");
+    return new Response(null, { status: 204 });
+  }
+
   if (path === "/health" || path === "/debug") return next();
   // Admin routes have their own auth gate
   if (path.startsWith("/admin")) return next();

@@ -506,6 +506,8 @@ let adminToken = localStorage.getItem("mivida_admin_token") || "";
 function adminApi(method, path, body) {
   const base = state.baseUrl.replace(/\/$/, "");
   const prefix = base ? base + "/api" : "/api";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
   return fetch(prefix + "/admin" + path, {
     method,
     headers: {
@@ -513,10 +515,15 @@ function adminApi(method, path, body) {
       ...(adminToken ? { Authorization: "Bearer " + adminToken } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
+    signal: controller.signal,
   }).then((r) => {
+    clearTimeout(timer);
     if (r.status === 401) throw new Error("Invalid admin token");
     if (!r.ok) return r.text().then((t) => { throw new Error(t || r.statusText); });
     return r.json();
+  }).catch((e) => {
+    clearTimeout(timer);
+    throw new Error(e.name === "AbortError" ? "Request timed out" : e.message);
   });
 }
 
