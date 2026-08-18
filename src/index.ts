@@ -17,7 +17,8 @@ import type { ExecutionContext } from "@cloudflare/workers-types";
 type Env = {
   DB: D1Database;
   MIVIDA_AUTH_TOKEN: string; // bearer token for API access
-  ADMIN_TOKEN: string; // admin-only bearer token
+  ADMIN_TOKEN: string; // admin-only bearer token (first admin)
+  ADMIN_TOKEN_2: string; // second admin token (e.g. Dr. Sheila)
   GITHUB_TOKEN: string; // for creating issues from admin console
   RESEND_API_KEY: string; // for sending deploy notification emails
   ENVIRONMENT: string; // dev | production
@@ -94,14 +95,14 @@ app.use("*", async (c, next) => {
   return next();
 });
 
-// Admin bearer auth gate
+// Admin bearer auth gate (supports multiple tokens)
 async function adminAuth(c: any, next: any) {
   const auth = c.req.header("Authorization") || "";
-  const token = c.env.ADMIN_TOKEN;
-  if (!token || auth !== `Bearer ${token}`) {
-    return c.json({ error: "unauthorized" }, 401);
+  const validTokens = [c.env.ADMIN_TOKEN, c.env.ADMIN_TOKEN_2].filter(Boolean);
+  for (const token of validTokens) {
+    if (auth === `Bearer ${token}`) return next();
   }
-  return next();
+  return c.json({ error: "unauthorized" }, 401);
 }
 
 // Health check (no auth required — useful for debugging binding issues)
