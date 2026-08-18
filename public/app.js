@@ -600,16 +600,31 @@ $("#adminFeedbackList").addEventListener("click", (e) => {
   else if (e.target.classList.contains("admin-decline")) adminAction(id, "decline", "declined");
 });
 
-$("#btnAdminLogin").addEventListener("click", () => {
+$("#btnAdminLogin").addEventListener("click", async () => {
   const token = $("#adminTokenInput").value.trim();
   if (!token) { $("#adminLoginMsg").textContent = "Enter the admin token."; return; }
+  $("#btnAdminLogin").disabled = true;
+  $("#btnAdminLogin").textContent = "Verifying...";
+  $("#adminLoginMsg").textContent = "";
+
+  // Test the token first before hiding the login
   adminToken = token;
-  localStorage.setItem("mivida_admin_token", token);
-  $("#adminLogin").classList.add("hidden");
-  $("#adminPanel").classList.remove("hidden");
-  loadAdminStats();
-  loadAdminFeedback();
+  try {
+    await adminApi("GET", "/stats");
+    localStorage.setItem("mivida_admin_token", token);
+    $("#adminLogin").classList.add("hidden");
+    $("#adminPanel").classList.remove("hidden");
+    loadAdminStats();
+    loadAdminFeedback();
+  } catch (e) {
+    adminToken = "";
+    $("#adminLoginMsg").textContent = e.message === "Invalid admin token" ? "Invalid admin token." : "Connection error: " + e.message;
+    $("#btnAdminLogin").disabled = false;
+    $("#btnAdminLogin").textContent = "Unlock";
+  }
 });
+
+// ---- Filters ----
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
