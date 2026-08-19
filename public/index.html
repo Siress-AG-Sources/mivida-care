@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=27" />
+  <link rel="stylesheet" href="/styles.css?v=28" />
 </head>
 <body>
   <!-- SIGN IN — covers everything until identity is established -->
@@ -57,7 +57,7 @@
       </div>
     </div>
 
-    <span class="version-tag" title="v27">v27</span>
+    <span class="version-tag" title="v28">v28</span>
 
     <div class="topbar-right">
       <span id="connStatus" class="conn conn-off" role="status" aria-live="polite">
@@ -164,6 +164,16 @@
         </div>
         <p class="muted small">Everyone who can sign in, what they are allowed to do, and when they last did.</p>
         <div id="usersList" class="stack"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2 class="section-title">Record access</h2>
+          <button id="btnRefreshAccess" class="btn btn-sm">Refresh</button>
+        </div>
+        <p class="muted small">Who opened patient records, and when. Repeated views within
+          15 minutes are grouped into one entry.</p>
+        <div id="accessLog" class="stack"></div>
       </div>
     </section>
 
@@ -491,6 +501,6 @@
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=27"></script>
+  <script src="/app.js?v=28"></script>
 </body>
 </html>

@@ -393,6 +393,54 @@ $("#usersList").addEventListener("click", async (e) => {
   }
 });
 
+// ---- Record access review ------------------------------------------------
+const ACCESS_SCOPE = {
+  patient_record: "Opened the patient record",
+  patient_list: "Viewed the patient list",
+  prescribing_list: "Viewed all prescriptions",
+  exception_list: "Viewed the exception list",
+  refill_list: "Viewed refill prompts",
+  unseen_list: "Viewed the 90-day list",
+  task_list: "Viewed tasks",
+  prescription_history: "Viewed a prescription history",
+};
+
+function accessRowsHtml(rows, showPatient) {
+  if (!rows.length) return `<div class="muted small">No record access logged yet.</div>`;
+  return rows.map((r) => `
+    <div class="access-row">
+      <div class="row">
+        <span class="badge ${r.actor === "legacy-token" ? "badge-medium" : "badge-muted"}">${esc(r.actor)}</span>
+        ${showPatient && r.patient_name ? `<span class="small"><strong>${esc(r.patient_name)}</strong></span>` : ""}
+        ${r.hits > 1 ? `<span class="muted small">${esc(r.hits)} views</span>` : ""}
+      </div>
+      <div class="muted small">${esc(ACCESS_SCOPE[r.scope] || r.scope)} · ${esc(fmtDateTime(r.last_at))}</div>
+    </div>`).join("");
+}
+
+async function loadAccessLog() {
+  const box = $("#accessLog");
+  if (!box) return;
+  try {
+    box.innerHTML = accessRowsHtml(await api("GET", "/access-log?limit=100"), true);
+  } catch (e) {
+    box.innerHTML = `<div class="muted small">${esc(e.message)}</div>`;
+  }
+}
+
+// Who has seen this particular patient's record — the accounting a patient can ask for.
+async function loadPatientAccess(patientId) {
+  const box = $("#patientAccess");
+  if (!box) return;
+  try {
+    box.innerHTML = accessRowsHtml(await api("GET", `/access-log?patient_id=${patientId}&limit=50`), false);
+  } catch (e) {
+    box.innerHTML = `<div class="muted small">${esc(e.message)}</div>`;
+  }
+}
+
+$("#btnRefreshAccess").addEventListener("click", loadAccessLog);
+
 // ---- Tabs ----
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -656,6 +704,10 @@ async function openPatient(id) {
         <span class="small">${esc(t.description)} <span class="muted">(due ${esc(fmtDate(t.due_date))})</span></span>
       </label>`).join("") || `<div class="muted">None.</div>`}
 
+    ${can("users.manage") ? `
+      <h3 class="section-title" style="margin-top:20px">Who has seen this record</h3>
+      <div id="patientAccess" class="stack"></div>` : ""}
+
     <div class="card-head" style="margin-top:20px">
       <h3 class="section-title" style="margin-bottom:0">Call log</h3>
       <button class="btn btn-sm btn-primary" id="btnNewCall">+ Log a call</button>
@@ -668,6 +720,7 @@ async function openPatient(id) {
   const dlg = $("#patientModal");
   if (!dlg.open) dlg.showModal();
   loadCalls(st.patient.id);
+  if (can("users.manage")) loadPatientAccess(st.patient.id);
 }
 
 const RX_ACTION_LABEL = {
@@ -1721,6 +1774,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
       if (tab.dataset.view === "users") {
       api("GET", "/users/capabilities").then((d) => { ROLE_CAPS = d.roles || {}; }).catch(() => {});
       loadUsers();
+      loadAccessLog();
     }
   if (tab.dataset.view === "unseen") loadUnseen();
     if (tab.dataset.view === "prescribing") loadPrescribing();

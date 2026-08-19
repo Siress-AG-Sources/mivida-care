@@ -194,6 +194,65 @@ function requireCap(cap: string) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Access logging
+// ---------------------------------------------------------------------------
+
+// Which reads count as looking at patient data. Anything not matched here —
+// /health, /auth/*, /users*, /feedback, /deploy-events — returns no patient
+// information and is not logged.
+function classifyAccess(path: string): { patientId?: number; medicationId?: number; scope: string } | null {
+  let m: RegExpMatchArray | null;
+  if ((m = path.match(/^\/patients\/(\d+)(?:\/.*)?$/))) {
+    return { patientId: Number(m[1]), scope: "patient_record" };
+  }
+  if ((m = path.match(/^\/medications\/(\d+)\/history$/))) {
+    return { medicationId: Number(m[1]), scope: "prescription_history" };
+  }
+  if (path === "/patients") return { scope: "patient_list" };
+  if (path.startsWith("/patients/unseen/")) return { scope: "unseen_list" };
+  if (path === "/prescribing") return { scope: "prescribing_list" };
+  if (path === "/exceptions") return { scope: "exception_list" };
+  if (path === "/refill-prompts") return { scope: "refill_list" };
+  if (path === "/tasks") return { scope: "task_list" };
+  return null;
+}
+
+// Floor the clock to a 15-minute bucket. A rolling "within N minutes of the last
+// hit" window cannot be a unique key, and without a unique key concurrent
+// requests race each other into duplicate rows.
+function accessBucket(): string {
+  const d = new Date();
+  d.setUTCSeconds(0, 0);
+  d.setUTCMinutes(Math.floor(d.getUTCMinutes() / 15) * 15);
+  return d.toISOString().slice(0, 16);
+}
+
+async function recordAccess(c: any, target: { patientId?: number; medicationId?: number; scope: string }, route: string) {
+  const actor = actorOf(c);
+  const user = c.get("user");
+  let patientId: number | null = target.patientId ?? null;
+
+  if (target.medicationId) {
+    // Resolve which patient this prescription belongs to. If the lookup fails
+    // the access is still recorded, with no patient rather than not at all.
+    try {
+      const med = (await c.env.DB.prepare("SELECT patient_id FROM medications WHERE id = ?")
+        .bind(target.medicationId).first()) as any;
+      patientId = med ? med.patient_id : null;
+    } catch {
+      patientId = null;
+    }
+  }
+
+  const windowKey = `${actor}|${patientId ?? "-"}|${target.scope}|${accessBucket()}`;
+  await c.env.DB.prepare(
+    `INSERT INTO access_log (actor, user_id, patient_id, scope, route, window_key, hits)
+     VALUES (?, ?, ?, ?, ?, ?, 1)
+     ON CONFLICT(window_key) DO UPDATE SET last_at = datetime('now'), hits = hits + 1`
+  ).bind(actor, user?.id ?? null, patientId, target.scope, route, windowKey).run();
+}
+
 // Simple bearer auth gate (skips health/debug and admin paths)
 app.use("*", async (c, next) => {
   const url = new URL(c.req.url);
@@ -255,6 +314,28 @@ app.use("*", async (c, next) => {
   }
 
   return c.json({ error: "unauthorized" }, 401);
+});
+
+// Log successful reads of patient data. Runs after the identity gate so the
+// actor is known, and after the handler so failures are not recorded as access.
+app.use("*", async (c, next) => {
+  await next();
+  if (c.req.method !== "GET") return;
+  const status = c.res?.status ?? 0;
+  if (status < 200 || status >= 400) return;
+
+  const path = new URL(c.req.url).pathname.replace(/^\/api/, "");
+  const target = classifyAccess(path);
+  if (!target) return;
+
+  const write = recordAccess(c, target, path).catch(() => { /* logging must never break a read */ });
+  try {
+    // Keep the write off the response path. executionCtx throws rather than
+    // returning undefined when there is no request context.
+    c.executionCtx.waitUntil(write);
+  } catch {
+    /* no execution context — the promise still runs, just unawaited */
+  }
 });
 
 // Admin bearer auth gate (supports multiple tokens)
@@ -402,6 +483,25 @@ async function activeSuperAdmins(db: D1Database, excludingId?: number): Promise<
   ).bind(excludingId ?? -1).first()) as { n: number };
   return row.n;
 }
+
+app.get("/access-log", requireCap("users.manage"), async (c) => {
+  const patientId = c.req.query("patient_id");
+  const actor = c.req.query("actor");
+  const limit = Math.min(Number(c.req.query("limit")) || 100, 500);
+
+  const where: string[] = [];
+  const args: unknown[] = [];
+  if (patientId) { where.push("a.patient_id = ?"); args.push(Number(patientId)); }
+  if (actor) { where.push("a.actor = ?"); args.push(actor); }
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT a.*, p.name AS patient_name
+     FROM access_log a LEFT JOIN patients p ON p.id = a.patient_id
+     ${where.length ? "WHERE " + where.join(" AND ") : ""}
+     ORDER BY a.last_at DESC LIMIT ?`
+  ).bind(...args, limit).all();
+  return c.json(results);
+});
 
 app.get("/users", requireCap("users.manage"), async (c) => {
   const { results } = await c.env.DB.prepare("SELECT * FROM users ORDER BY status, name").all();
