@@ -503,64 +503,33 @@ $("#refillsList").addEventListener("click", async (e) => {
 // ---- Admin console ----
 let adminToken = localStorage.getItem("mivida_admin_token") || "";
 
-function setAdminTabState(unlocked) {
-  const tab = document.querySelector(".tab-admin");
-  if (unlocked) {
-    tab.style.color = "#34d17b";
-    tab.style.fontWeight = "700";
-  } else {
-    tab.style.color = "";
-    tab.style.fontWeight = "";
-  }
-}
-
-async function adminFetch(path) {
-  const url = "/api/admin" + path;
+function adminApi(method, path, body) {
+  const base = state.baseUrl.replace(/\/$/, "");
+  const prefix = base ? base + "/api" : "/api";
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const res = await fetch(url, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(adminToken ? { Authorization: "Bearer " + adminToken } : {}),
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (res.status === 401) throw new Error("Invalid admin token");
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(txt || ("HTTP " + res.status));
-    }
-    return res.json();
-  } catch (e) {
-    clearTimeout(timer);
-    const msg = e.name === "AbortError" ? "Request timed out" : (e.message || "Connection failed");
-    throw new Error(msg);
-  }
-}
-
-async function adminPatch(path, body) {
-  const url = "/api/admin" + path;
-  const res = await fetch(url, {
-    method: "PATCH",
+  const timer = setTimeout(() => controller.abort(), 10000);
+  return fetch(prefix + "/admin" + path, {
+    method,
     headers: {
       "Content-Type": "application/json",
       ...(adminToken ? { Authorization: "Bearer " + adminToken } : {}),
     },
-    body: JSON.stringify(body),
+    body: body ? JSON.stringify(body) : undefined,
+    signal: controller.signal,
+  }).then((r) => {
+    clearTimeout(timer);
+    if (r.status === 401) throw new Error("Invalid admin token");
+    if (!r.ok) return r.text().then((t) => { throw new Error(t || r.statusText); });
+    return r.json();
+  }).catch((e) => {
+    clearTimeout(timer);
+    throw new Error(e.name === "AbortError" ? "Request timed out" : e.message);
   });
-  if (res.status === 401) throw new Error("Invalid admin token");
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(txt || ("HTTP " + res.status));
-  }
-  return res.json();
 }
 
 async function loadAdminStats() {
   try {
-    const stats = await adminFetch("/stats");
+    const stats = await adminApi("GET", "/stats");
     const box = $("#adminStats");
     let html = `<div class="card stat-card"><p class="stat-label">Total feedback</p><p class="stat-value">${stats.total}</p></div>`;
     if (stats.by_status) {
@@ -583,7 +552,7 @@ async function loadAdminFeedback() {
     if (status) qs.push("status=" + encodeURIComponent(status));
     if (category) qs.push("category=" + encodeURIComponent(category));
     if (qs.length) path += "?" + qs.join("&");
-    const items = await adminFetch(path);
+    const items = await adminApi("GET", path);
     const list = $("#adminFeedbackList");
     if (!items || items.length === 0) {
       list.innerHTML = `<div class="card muted">No feedback matches the filter.</div>`;
@@ -621,7 +590,7 @@ async function adminAction(id, action, status) {
   try {
     const body = { status };
     if (action === "approve") body.action = "approve";
-    await adminPatch("/feedback/" + id, body);
+    await adminApi("PATCH", "/feedback/" + id, body);
     toast(action === "approve" ? "Approved! GitHub issue created." : "Updated!");
     loadAdminStats();
     loadAdminFeedback();
@@ -645,19 +614,18 @@ $("#btnAdminLogin").addEventListener("click", async () => {
   $("#btnAdminLogin").textContent = "Verifying...";
   $("#adminLoginMsg").textContent = "";
 
+  // Test the token first before hiding the login
   adminToken = token;
   try {
-    const stats = await adminFetch("/stats");
+    await adminApi("GET", "/stats");
     localStorage.setItem("mivida_admin_token", token);
-    setAdminTabState(true);
     $("#adminLogin").classList.add("hidden");
     $("#adminPanel").classList.remove("hidden");
     loadAdminStats();
     loadAdminFeedback();
   } catch (e) {
     adminToken = "";
-    setAdminTabState(false);
-    $("#adminLoginMsg").textContent = e.message || "Connection failed";
+    $("#adminLoginMsg").textContent = e.message === "Invalid admin token" ? "Invalid admin token." : "Connection error: " + e.message;
     $("#btnAdminLogin").disabled = false;
     $("#btnAdminLogin").textContent = "Unlock";
   }
@@ -678,95 +646,3 @@ document.querySelectorAll(".tab").forEach((tab) => {
 
 $("#adminFilterStatus").addEventListener("change", loadAdminFeedback);
 $("#adminFilterCategory").addEventListener("change", loadAdminFeedback);
-
-// Restore admin state on page load
-if (adminToken) setAdminTabState(true);
-
-// ---- 90-day unseen patients ----
-async function loadUnseen() {
-  try {
-    const patients = await api("GET", "/patients/unseen/90");
-    const list = $("#unseenList");
-    if (patients.length === 0) {
-      list.innerHTML = `<div class="card muted">All patients seen within 90 days. Great!</div>`;
-      return;
-    }
-    list.innerHTML = patients.map((p) => {
-      const days = p.last_encounter
-        ? Math.floor((Date.now() - new Date(p.last_encounter).getTime()) / 86400000)
-        : "never";
-      return `<div class="card">
-        <div class="row" style="margin-bottom:4px">
-          <strong>${esc(p.name)}</strong>
-          <span class="badge badge-medium">${days} days</span>
-          <span class="muted small">${esc(p.membership_level || "—")}</span>
-        </div>
-        <div class="muted small">
-          Last contact: ${esc(fmtDate(p.last_encounter) || "never")}
-          · ${esc(p.phone || "no phone")}
-          · ${esc(p.email || "—")}
-        </div>
-      </div>`;
-    }).join("");
-  } catch (e) {
-    $("#unseenList").innerHTML = `<div class="card muted">${esc(e.message)}</div>`;
-  }
-}
-$("#btnUnseen").addEventListener("click", loadUnseen);
-
-// ---- Prescribing view ----
-async function loadPrescribing() {
-  try {
-    const data = await api("GET", "/prescribing");
-    const list = $("#prescribingList");
-    if (!data || data.length === 0) {
-      list.innerHTML = `<div class="card muted">No active prescriptions.</div>`;
-      return;
-    }
-    list.innerHTML = data.map((p) => {
-      const meds = (p.medications || []).map((m) => {
-        const days = m.estimated_exhaustion_date
-          ? Math.floor((new Date(m.estimated_exhaustion_date).getTime() - Date.now()) / 86400000)
-          : null;
-        return `<div class="exception-item" style="margin-bottom:4px">
-          <strong>${esc(m.name)}</strong> ${esc(m.dose || "")}
-          <span class="muted small">
-            ${m.quantity ? `· qty ${m.quantity}` : ""}
-            ${days !== null ? `· ${days} days left` : ""}
-            ${m.in_transit ? "· in transit" : ""}
-            ${m.confirmed_at ? "· confirmed" : m.in_transit ? "· unconfirmed" : ""}
-          </span>
-        </div>`;
-      }).join("");
-      return `<div class="card">
-        <div class="card-head" style="margin-bottom:8px">
-          <strong>${esc(p.patient_name)}</strong>
-          <span class="badge badge-low">${esc(p.membership_level || "—")}</span>
-        </div>
-        ${meds}
-      </div>`;
-    }).join("");
-  } catch (e) {
-    $("#prescribingList").innerHTML = `<div class="card muted">${esc(e.message)}</div>`;
-  }
-}
-
-// ---- Archive button on patient detail ----
-async function archivePatient(id) {
-  if (!confirm("Archive this patient? They will be hidden from active lists but can be restored.")) return;
-  try {
-    await api("PATCH", `/patients/${id}/archive`);
-    toast("Patient archived.");
-    loadPatients();
-  } catch (e) {
-    toast("Error: " + e.message);
-  }
-}
-
-// Hook up tab switching for new tabs
-document.querySelectorAll(".tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    if (tab.dataset.view === "unseen") loadUnseen();
-    if (tab.dataset.view === "prescribing") loadPrescribing();
-  });
-});

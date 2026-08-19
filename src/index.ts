@@ -37,6 +37,7 @@ type Patient = {
   treatment_phase: string | null;
   expected_contact_interval_days: number;
   insurance_info: string | null;
+  archived: number;
 };
 
 type Medication = {
@@ -778,6 +779,115 @@ async function audit(
     .bind(actor, action, entityType, entityId, before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null)
     .run();
 }
+
+// ---------------------------------------------------------------------------
+// Call log (timestamped patient contacts)
+// ---------------------------------------------------------------------------
+
+app.post("/patients/:id/calls", async (c) => {
+  const pid = Number(c.req.param("id"));
+  const body = await c.req.json();
+  const result = await c.env.DB.prepare(
+    `INSERT INTO call_log (patient_id, called_at, direction, notes, duration_minutes)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(pid, body.called_at || new Date().toISOString(), body.direction || "outbound", body.notes || null, body.duration_minutes || null).run();
+  await audit(c, "system", "call.create", "call_log", result.meta.last_row_id, null, body);
+  return c.json({ id: result.meta.last_row_id }, 201);
+});
+
+app.get("/patients/:id/calls", async (c) => {
+  const pid = Number(c.req.param("id"));
+  const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
+  const { results } = await c.env.DB.prepare(
+    "SELECT * FROM call_log WHERE patient_id = ? ORDER BY called_at DESC LIMIT ?"
+  ).bind(pid, limit).all();
+  return c.json(results);
+});
+
+// ---------------------------------------------------------------------------
+// Archive / delete patient
+// ---------------------------------------------------------------------------
+
+app.patch("/patients/:id/archive", async (c) => {
+  const id = Number(c.req.param("id"));
+  const current = await c.env.DB.prepare("SELECT * FROM patients WHERE id = ?").bind(id).first();
+  if (!current) return c.json({ error: "not found" }, 404);
+  await c.env.DB.prepare("UPDATE patients SET archived = 1, updated_at = datetime('now') WHERE id = ?").bind(id).run();
+  await audit(c, "system", "patient.archive", "patients", id, current, { archived: 1 });
+  return c.json({ archived: true });
+});
+
+app.patch("/patients/:id/unarchive", async (c) => {
+  const id = Number(c.req.param("id"));
+  const current = await c.env.DB.prepare("SELECT * FROM patients WHERE id = ?").bind(id).first();
+  if (!current) return c.json({ error: "not found" }, 404);
+  await c.env.DB.prepare("UPDATE patients SET archived = 0, updated_at = datetime('now') WHERE id = ?").bind(id).run();
+  return c.json({ archived: false });
+});
+
+// ---------------------------------------------------------------------------
+// 90-day unseen patients list
+// ---------------------------------------------------------------------------
+
+app.get("/patients/unseen/:days", async (c) => {
+  const days = Math.min(Number(c.req.param("days")) || 90, 365);
+  const { results } = await c.env.DB.prepare(
+    `SELECT p.*,
+      (SELECT MAX(occurred_at) FROM encounters WHERE patient_id = p.id) AS last_encounter,
+      (SELECT MAX(called_at) FROM call_log WHERE patient_id = p.id) AS last_call
+     FROM patients p
+     WHERE p.archived = 0
+       AND (SELECT MAX(occurred_at) FROM encounters WHERE patient_id = p.id) IS NULL
+        OR (SELECT MAX(occurred_at) FROM encounters WHERE patient_id = p.id) < datetime('now', '-' || ? || ' days')
+     ORDER BY COALESCE(
+       (SELECT MAX(occurred_at) FROM encounters WHERE patient_id = p.id),
+       '0000-01-01'
+     ) ASC`
+  ).bind(days).all();
+  return c.json(results);
+});
+
+// ---------------------------------------------------------------------------
+// Prescribing view — all active meds for each patient
+// ---------------------------------------------------------------------------
+
+app.get("/prescribing", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT p.id, p.name AS patient_name, p.phone, p.email, p.membership_level,
+            m.id AS med_id, m.name AS med_name, m.dose, m.quantity,
+            m.estimated_exhaustion_date, m.order_by_date, m.in_transit, m.confirmed_at
+     FROM patients p
+     JOIN medications m ON m.patient_id = p.id
+     WHERE p.archived = 0
+     ORDER BY p.name, m.name`
+  ).all();
+  // Group by patient
+  const grouped: Record<number, any> = {};
+  for (const r of results) {
+    const pid = r.id as number;
+    if (!grouped[pid]) {
+      grouped[pid] = {
+        id: pid,
+        patient_name: r.patient_name,
+        phone: r.phone,
+        email: r.email,
+        membership_level: r.membership_level,
+        medications: [] as any[],
+      };
+    }
+    grouped[pid].medications.push({
+      id: r.med_id,
+      name: r.med_name,
+      dose: r.dose,
+      quantity: r.quantity,
+      estimated_exhaustion_date: r.estimated_exhaustion_date,
+      order_by_date: r.order_by_date,
+      in_transit: r.in_transit,
+      confirmed_at: r.confirmed_at,
+    });
+  }
+  return c.json(Object.values(grouped));
+});
 
 // ---------------------------------------------------------------------------
 // Admin console — feedback management + GitHub issue creation
