@@ -105,6 +105,19 @@ body { font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Seg
 .exception-item.medium { border-left-color: var(--warn); }
 .exception-item.low { border-left-color: var(--muted); }
 
+/* ---- Sign-in gate ---- */
+.signin-gate { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: var(--teal-deep); overflow-y: auto; }
+.signin-gate.hidden { display: none; }
+.signin-card { width: 100%; max-width: 380px; background: var(--card); border-radius: var(--radius); padding: 24px; box-shadow: 0 10px 40px rgba(0,0,0,.3); }
+.signin-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.signin-brand .brand-name { color: var(--text); font-size: 17px; }
+.signin-brand .tagline { color: var(--muted); }
+.signin-alt { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.signin-alt summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.signin-alt[open] summary { margin-bottom: 10px; }
+.temp-password { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 18px; letter-spacing: .06em; background: var(--mint-light); border: 1px solid var(--border); border-radius: 8px; padding: 12px; text-align: center; user-select: all; word-break: break-all; }
+.card.is-archived { opacity: .68; }
+
 /* ---- Status board: one row per rule that fired, each with its action ---- */
 .attn-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .attn-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -271,6 +284,8 @@ textarea:focus, select:focus, .field-input:focus { outline: none; border-color: 
   .attn-btn { width: 100%; min-height: 44px; }
   .task-row { min-height: 44px; align-items: center; }
   .task-row input { width: 22px; height: 22px; margin-top: 0; }
+  .signin-card { padding: 20px 16px; }
+  .signin-card input { font-size: 16px; min-height: 44px; }
   .call-form { padding: 12px; }
   .rx-option { min-height: 44px; padding: 4px 0; }
   .rx-capture .cl-med-action { min-height: 44px; font-size: 16px; }

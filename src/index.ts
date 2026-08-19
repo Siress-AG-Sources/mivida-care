@@ -68,7 +68,14 @@ type Cycle = {
 // App
 // ---------------------------------------------------------------------------
 
-const app = new Hono<{ Bindings: Env }>();
+// Set by the identity middleware, read by requireCap and the audit actor.
+type Vars = {
+  user?: any;
+  caps?: Set<string>;
+  legacyToken?: boolean;
+};
+
+const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
 // CORS (for the static UI on Pages or local dev)
 app.use("*", async (c, next) => {
@@ -77,6 +84,115 @@ app.use("*", async (c, next) => {
   c.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 });
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+// Capabilities map to actions that exist in the app. Reads need patients.read;
+// each mutating route names the one capability it requires.
+const CAPABILITIES = [
+  "patients.read",
+  "patients.write",
+  "prescriptions.write",
+  "calls.write",
+  "tasks.write",
+  "refills.write",
+  "monitor.run",
+  "feedback.admin",
+  "users.manage",
+] as const;
+
+const ROLE_DEFAULTS: Record<string, string[]> = {
+  super_admin: [...CAPABILITIES],
+  physician: ["patients.read", "patients.write", "prescriptions.write", "calls.write", "tasks.write", "refills.write", "monitor.run"],
+  staff: ["patients.read", "calls.write", "tasks.write", "refills.write", "monitor.run"],
+  readonly: ["patients.read"],
+};
+
+const SESSION_HOURS = 12;
+const PBKDF2_ITERATIONS = 150000;
+
+function toHex(buf: ArrayBuffer): string {
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function randomHex(bytes: number): string {
+  const a = new Uint8Array(bytes);
+  crypto.getRandomValues(a);
+  return [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  return toHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input)));
+}
+
+// PBKDF2-HMAC-SHA256. bcrypt/argon2 need a WASM dependency on Workers; PBKDF2
+// is available natively through WebCrypto. The iteration count lives on the row
+// so it can be raised later without invalidating existing passwords.
+async function hashPassword(password: string, salt: string, iterations: number): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: new TextEncoder().encode(salt), iterations, hash: "SHA-256" },
+    key,
+    256
+  );
+  return toHex(bits);
+}
+
+// Constant-time comparison, so a wrong password cannot be narrowed by timing.
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function capsOf(user: any): Set<string> {
+  try {
+    const parsed = JSON.parse(user.capabilities || "[]");
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+// Never let a user row reach the client with its password material attached.
+function publicUser(u: any) {
+  return {
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    role: u.role,
+    capabilities: JSON.parse(u.capabilities || "[]"),
+    status: u.status,
+    must_change_password: !!u.must_change_password,
+    created_at: u.created_at,
+    archived_at: u.archived_at,
+    last_login_at: u.last_login_at,
+  };
+}
+
+// Who is making this request, for the audit trail.
+function actorOf(c: any): string {
+  const u = c.get("user");
+  if (u) return `${u.email} (#${u.id})`;
+  return c.get("legacyToken") ? "legacy-token" : "system";
+}
+
+function requireCap(cap: string) {
+  return async (c: any, next: any) => {
+    // The shared token predates capabilities and keeps full access until it is
+    // retired, so it passes — but audits under its own actor, which makes every
+    // action still bypassing identity visible in the trail.
+    if (c.get("legacyToken")) return next();
+    const caps: Set<string> = c.get("caps") || new Set();
+    if (!caps.has(cap)) {
+      return c.json({ error: "forbidden", needed: cap, message: `Your account does not have "${cap}" access.` }, 403);
+    }
+    return next();
+  };
+}
 
 // Simple bearer auth gate (skips health/debug and admin paths)
 app.use("*", async (c, next) => {
@@ -95,14 +211,50 @@ app.use("*", async (c, next) => {
   if (path === "/health" || path === "/debug") return next();
   // Admin routes have their own auth gate
   if (path.startsWith("/admin")) return next();
-  // Admin routes also accessible via /api prefix
   if (url.pathname.startsWith("/api/admin")) return next();
-  const expected = c.env.MIVIDA_AUTH_TOKEN;
+  // Logging in and bootstrapping carry their own credentials
+  if (path.endsWith("/auth/login") || path.endsWith("/auth/bootstrap")) return next();
+
   const auth = c.req.header("Authorization") || "";
-  if (!expected || auth !== `Bearer ${expected}`) {
-    return c.json({ error: "unauthorized" }, 401);
+  const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!presented) return c.json({ error: "unauthorized" }, 401);
+
+  // 1. A real user session.
+  const tokenHash = await sha256Hex(presented);
+  const session = (await c.env.DB.prepare(
+    `SELECT s.id AS sid, s.expires_at, u.*
+     FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.token_hash = ?`
+  ).bind(tokenHash).first()) as any;
+
+  if (session) {
+    if (session.status !== "active") {
+      // An archived account loses access immediately, not at session expiry.
+      await c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(session.id).run();
+      return c.json({ error: "unauthorized", message: "This account has been archived." }, 401);
+    }
+    if (new Date(session.expires_at.replace(" ", "T") + "Z").getTime() < Date.now()) {
+      await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(session.sid).run();
+      return c.json({ error: "unauthorized", message: "Your session has expired. Please sign in again." }, 401);
+    }
+    // Sliding expiry: active use keeps the session alive.
+    await c.env.DB.prepare(
+      `UPDATE sessions SET last_seen_at = datetime('now'), expires_at = datetime('now', '+${SESSION_HOURS} hours') WHERE id = ?`
+    ).bind(session.sid).run();
+    c.set("user", session);
+    c.set("caps", capsOf(session));
+    return next();
   }
-  return next();
+
+  // 2. The shared token, kept working so nobody is locked out mid-migration.
+  //    It audits as "legacy-token" so its use stays visible in the trail.
+  const shared = c.env.MIVIDA_AUTH_TOKEN;
+  if (shared && timingSafeEqual(presented, shared)) {
+    c.set("legacyToken", true);
+    return next();
+  }
+
+  return c.json({ error: "unauthorized" }, 401);
 });
 
 // Admin bearer auth gate (supports multiple tokens)
@@ -128,6 +280,239 @@ app.get("/debug", adminAuth, async (c) => {
   const keys = Object.keys(c.env).filter((k) => k !== "MIVIDA_AUTH_TOKEN" && k !== "ADMIN_TOKEN" && k !== "ADMIN_TOKEN_2" && k !== "GITHUB_TOKEN" && k !== "RESEND_API_KEY");
   const hasToken = typeof c.env.MIVIDA_AUTH_TOKEN === "string" && c.env.MIVIDA_AUTH_TOKEN.length > 0;
   return c.json({ keys, hasToken, tokenLength: hasToken ? c.env.MIVIDA_AUTH_TOKEN.length : 0 });
+});
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+async function createSession(db: D1Database, userId: number): Promise<{ token: string; expires_at: string }> {
+  const token = randomHex(32);
+  const hash = await sha256Hex(token);
+  await db.prepare(
+    `INSERT INTO sessions (user_id, token_hash, expires_at)
+     VALUES (?, ?, datetime('now', '+${SESSION_HOURS} hours'))`
+  ).bind(userId, hash).run();
+  const row = (await db.prepare("SELECT expires_at FROM sessions WHERE token_hash = ?").bind(hash).first()) as any;
+  return { token, expires_at: row.expires_at };
+}
+
+// First super-admin only. Guarded by ADMIN_TOKEN and refuses once any user
+// exists, so it cannot become a standing backdoor.
+app.post("/auth/bootstrap", async (c) => {
+  const admin = c.env.ADMIN_TOKEN;
+  const auth = c.req.header("Authorization") || "";
+  if (!admin || auth !== `Bearer ${admin}`) return c.json({ error: "unauthorized" }, 401);
+
+  const existing = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first()) as { n: number };
+  if (existing.n > 0) {
+    return c.json({ error: "already_bootstrapped", message: "Users already exist. Sign in and add people from the Users tab." }, 409);
+  }
+
+  const body = await c.req.json();
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+  if (!email || password.length < 12) {
+    return c.json({ error: "invalid", message: "An email and a password of at least 12 characters are required." }, 400);
+  }
+
+  const salt = randomHex(16);
+  const hash = await hashPassword(password, salt, PBKDF2_ITERATIONS);
+  const res = await c.env.DB.prepare(
+    `INSERT INTO users (name, email, role, capabilities, password_hash, password_salt, password_iterations, must_change_password)
+     VALUES (?, ?, 'super_admin', ?, ?, ?, ?, 0)`
+  ).bind(String(body.name || "Administrator"), email, JSON.stringify(ROLE_DEFAULTS.super_admin), hash, salt, PBKDF2_ITERATIONS).run();
+
+  await audit(c, `bootstrap:${email}`, "user.bootstrap", "users", res.meta.last_row_id, null, { email, role: "super_admin" });
+  return c.json({ id: res.meta.last_row_id, email }, 201);
+});
+
+app.post("/auth/login", async (c) => {
+  const body = await c.req.json();
+  const email = String(body.email || "").trim().toLowerCase();
+  const password = String(body.password || "");
+
+  const user = (await c.env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first()) as any;
+  // Same response whether the account is missing, archived or the password is
+  // wrong — a login form should not tell an attacker which accounts exist.
+  const fail = () => c.json({ error: "invalid_credentials", message: "Email or password is incorrect." }, 401);
+  if (!user || user.status !== "active") return fail();
+
+  const attempt = await hashPassword(password, user.password_salt, user.password_iterations);
+  if (!timingSafeEqual(attempt, user.password_hash)) return fail();
+
+  const session = await createSession(c.env.DB, user.id);
+  await c.env.DB.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").bind(user.id).run();
+  await audit(c, `${user.email} (#${user.id})`, "user.login", "users", user.id, null, null);
+
+  return c.json({ token: session.token, expires_at: session.expires_at, user: publicUser(user) });
+});
+
+app.post("/auth/logout", async (c) => {
+  const auth = c.req.header("Authorization") || "";
+  const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (presented) {
+    await c.env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256Hex(presented)).run();
+  }
+  return c.json({ ok: true });
+});
+
+app.get("/auth/me", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json({ legacy: true, capabilities: [...CAPABILITIES], message: "Signed in with the shared access token." });
+  return c.json({ legacy: false, user: publicUser(u), capabilities: [...capsOf(u)] });
+});
+
+app.post("/auth/password", async (c) => {
+  const u = c.get("user");
+  if (!u) return c.json({ error: "forbidden", message: "Password changes require a named account." }, 403);
+  const body = await c.req.json();
+  const current = String(body.current_password || "");
+  const next = String(body.new_password || "");
+  if (next.length < 12) return c.json({ error: "invalid", message: "New password must be at least 12 characters." }, 400);
+
+  const attempt = await hashPassword(current, u.password_salt, u.password_iterations);
+  if (!timingSafeEqual(attempt, u.password_hash)) {
+    return c.json({ error: "invalid", message: "Current password is incorrect." }, 400);
+  }
+  const salt = randomHex(16);
+  const hash = await hashPassword(next, salt, PBKDF2_ITERATIONS);
+  await c.env.DB.prepare(
+    `UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, must_change_password = 0 WHERE id = ?`
+  ).bind(hash, salt, PBKDF2_ITERATIONS, u.id).run();
+  // Every other session for this account is invalidated on a password change.
+  const keep = (c.req.header("Authorization") || "").slice(7);
+  await c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?")
+    .bind(u.id, await sha256Hex(keep)).run();
+  await audit(c, actorOf(c), "user.password_change", "users", u.id, null, null);
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// User management (super-admin)
+// ---------------------------------------------------------------------------
+
+const USER_COLUMNS = new Set(["name", "email", "role", "capabilities", "status"]);
+
+// The system must never be left without a way in.
+async function activeSuperAdmins(db: D1Database, excludingId?: number): Promise<number> {
+  const row = (await db.prepare(
+    `SELECT COUNT(*) AS n FROM users
+     WHERE status = 'active' AND role = 'super_admin' AND id != ?`
+  ).bind(excludingId ?? -1).first()) as { n: number };
+  return row.n;
+}
+
+app.get("/users", requireCap("users.manage"), async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT * FROM users ORDER BY status, name").all();
+  return c.json((results as any[]).map(publicUser));
+});
+
+app.get("/users/capabilities", requireCap("users.manage"), (c) =>
+  c.json({ capabilities: [...CAPABILITIES], roles: ROLE_DEFAULTS })
+);
+
+app.post("/users", requireCap("users.manage"), async (c) => {
+  const body = await c.req.json();
+  const email = String(body.email || "").trim().toLowerCase();
+  const name = String(body.name || "").trim();
+  const role = String(body.role || "staff");
+  if (!name || !email) return c.json({ error: "invalid", message: "Name and email are required." }, 400);
+  if (!ROLE_DEFAULTS[role]) return c.json({ error: "invalid", message: "Unknown role." }, 400);
+
+  const clash = await c.env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
+  if (clash) return c.json({ error: "duplicate", message: "Someone already has that email address." }, 409);
+
+  // Capabilities are seeded from the role, then editable per person.
+  const caps = Array.isArray(body.capabilities)
+    ? body.capabilities.filter((x: string) => (CAPABILITIES as readonly string[]).includes(x))
+    : ROLE_DEFAULTS[role];
+
+  // A generated first password: it is shown to the super-admin once, and the
+  // account must change it at first sign-in.
+  const temporary = randomHex(9);
+  const salt = randomHex(16);
+  const hash = await hashPassword(temporary, salt, PBKDF2_ITERATIONS);
+
+  const res = await c.env.DB.prepare(
+    `INSERT INTO users (name, email, role, capabilities, password_hash, password_salt, password_iterations, must_change_password)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1)`
+  ).bind(name, email, role, JSON.stringify(caps), hash, salt, PBKDF2_ITERATIONS).run();
+
+  await audit(c, actorOf(c), "user.create", "users", res.meta.last_row_id, null, { name, email, role, capabilities: caps });
+  return c.json({ id: res.meta.last_row_id, temporary_password: temporary }, 201);
+});
+
+app.patch("/users/:id", requireCap("users.manage"), async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json();
+  const current = (await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first()) as any;
+  if (!current) return c.json({ error: "not found" }, 404);
+
+  // Guard the last way in, server-side rather than in the UI.
+  const losingSuperAdmin =
+    (body.role && body.role !== "super_admin" && current.role === "super_admin") ||
+    (body.status === "archived" && current.status === "active" && current.role === "super_admin");
+  if (losingSuperAdmin && (await activeSuperAdmins(c.env.DB, id)) === 0) {
+    return c.json({
+      error: "last_super_admin",
+      message: "This is the only active super-admin. Promote someone else first, or nobody can manage users.",
+    }, 409);
+  }
+
+  const patch: Record<string, unknown> = {};
+  for (const f of Object.keys(body)) {
+    if (!USER_COLUMNS.has(f)) continue;
+    if (f === "capabilities") {
+      const caps = Array.isArray(body.capabilities)
+        ? body.capabilities.filter((x: string) => (CAPABILITIES as readonly string[]).includes(x))
+        : [];
+      patch.capabilities = JSON.stringify(caps);
+    } else if (f === "email") {
+      patch.email = String(body.email).trim().toLowerCase();
+    } else if (f === "role") {
+      if (!ROLE_DEFAULTS[body.role]) return c.json({ error: "invalid", message: "Unknown role." }, 400);
+      patch.role = body.role;
+    } else if (f === "status") {
+      if (!["active", "archived"].includes(body.status)) return c.json({ error: "invalid" }, 400);
+      patch.status = body.status;
+      patch.archived_at = body.status === "archived" ? new Date().toISOString().slice(0, 19).replace("T", " ") : null;
+    } else {
+      patch[f] = body[f];
+    }
+  }
+  const fields = Object.keys(patch);
+  if (!fields.length) return c.json({ error: "no updatable fields" }, 400);
+
+  await c.env.DB.prepare(
+    `UPDATE users SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`
+  ).bind(...fields.map((f) => patch[f]), id).run();
+
+  // Archiving ends every open session for that account immediately.
+  if (patch.status === "archived") {
+    await c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id).run();
+  }
+
+  await audit(c, actorOf(c), "user.update", "users", id, publicUser(current), patch);
+  const updated = (await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first()) as any;
+  return c.json(publicUser(updated));
+});
+
+app.post("/users/:id/reset-password", requireCap("users.manage"), async (c) => {
+  const id = Number(c.req.param("id"));
+  const user = (await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first()) as any;
+  if (!user) return c.json({ error: "not found" }, 404);
+
+  const temporary = randomHex(9);
+  const salt = randomHex(16);
+  const hash = await hashPassword(temporary, salt, PBKDF2_ITERATIONS);
+  await c.env.DB.prepare(
+    `UPDATE users SET password_hash = ?, password_salt = ?, password_iterations = ?, must_change_password = 1 WHERE id = ?`
+  ).bind(hash, salt, PBKDF2_ITERATIONS, id).run();
+  await c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id).run();
+
+  await audit(c, actorOf(c), "user.password_reset", "users", id, null, null);
+  return c.json({ temporary_password: temporary });
 });
 
 // ---------------------------------------------------------------------------
@@ -168,7 +553,7 @@ app.get("/patients/:id", async (c) => {
   return c.json(patient);
 });
 
-app.post("/patients", async (c) => {
+app.post("/patients", requireCap("patients.write"), async (c) => {
   const body = await c.req.json();
   const result = await c.env.DB.prepare(
     `INSERT INTO patients
@@ -189,11 +574,11 @@ app.post("/patients", async (c) => {
       body.insurance_info || null
     )
     .run();
-  await audit(c, "system", "patient.create", "patients", result.meta.last_row_id, null, body);
+  await audit(c, actorOf(c), "patient.create", "patients", result.meta.last_row_id, null, body);
   return c.json({ id: result.meta.last_row_id }, 201);
 });
 
-app.patch("/patients/:id", async (c) => {
+app.patch("/patients/:id", requireCap("patients.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
   const current = await c.env.DB.prepare("SELECT * FROM patients WHERE id = ?")
@@ -211,7 +596,7 @@ app.patch("/patients/:id", async (c) => {
   )
     .bind(...values, id)
     .run();
-  await audit(c, "system", "patient.update", "patients", id, current, body);
+  await audit(c, actorOf(c), "patient.update", "patients", id, current, body);
   const updated = await c.env.DB.prepare("SELECT * FROM patients WHERE id = ?")
     .bind(id)
     .first();
@@ -247,7 +632,7 @@ app.get("/patients/:id/medications", async (c) => {
   return c.json(results);
 });
 
-app.post("/patients/:id/medications", async (c) => {
+app.post("/patients/:id/medications", requireCap("prescriptions.write"), async (c) => {
   const patientId = Number(c.req.param("id"));
   const body = await c.req.json();
   const result = await c.env.DB.prepare(
@@ -269,7 +654,7 @@ app.post("/patients/:id/medications", async (c) => {
       body.delivery_notes || null
     )
     .run();
-  await audit(c, "system", "medication.create", "medications", result.meta.last_row_id, null, body);
+  await audit(c, actorOf(c), "medication.create", "medications", result.meta.last_row_id, null, body);
   return c.json({ id: result.meta.last_row_id }, 201);
 });
 
@@ -322,7 +707,7 @@ app.get("/medications/:id/history", async (c) => {
   return c.json({ medication: med, events });
 });
 
-app.delete("/medications/:id", async (c) => {
+app.delete("/medications/:id", requireCap("prescriptions.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const med = await c.env.DB.prepare("SELECT * FROM medications WHERE id = ?").bind(id).first();
   if (!med) return c.json({ error: "not found" }, 404);
@@ -340,11 +725,11 @@ app.delete("/medications/:id", async (c) => {
 
   await c.env.DB.prepare("DELETE FROM refill_prompts WHERE medication_id = ?").bind(id).run();
   await c.env.DB.prepare("DELETE FROM medications WHERE id = ?").bind(id).run();
-  await audit(c, "system", "medication.delete", "medications", id, med, null);
+  await audit(c, actorOf(c), "medication.delete", "medications", id, med, null);
   return c.json({ deleted: true });
 });
 
-app.patch("/medications/:id", async (c) => {
+app.patch("/medications/:id", requireCap("prescriptions.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
   // Column names cannot be bound as parameters — allowlist them.
@@ -377,7 +762,7 @@ app.get("/patients/:id/cycles", async (c) => {
   return c.json(results);
 });
 
-app.post("/patients/:id/cycles", async (c) => {
+app.post("/patients/:id/cycles", requireCap("patients.write"), async (c) => {
   const patientId = Number(c.req.param("id"));
   const body = await c.req.json();
   const result = await c.env.DB.prepare(
@@ -392,7 +777,7 @@ app.post("/patients/:id/cycles", async (c) => {
       body.what_comes_next || null
     )
     .run();
-  await audit(c, "system", "cycle.create", "cycles", result.meta.last_row_id, null, body);
+  await audit(c, actorOf(c), "cycle.create", "cycles", result.meta.last_row_id, null, body);
   return c.json({ id: result.meta.last_row_id }, 201);
 });
 
@@ -400,7 +785,7 @@ app.post("/patients/:id/cycles", async (c) => {
 // Encounters (the four questions)
 // ---------------------------------------------------------------------------
 
-app.post("/patients/:id/encounters", async (c) => {
+app.post("/patients/:id/encounters", requireCap("calls.write"), async (c) => {
   const patientId = Number(c.req.param("id"));
   const body = await c.req.json();
   const result = await c.env.DB.prepare(
@@ -433,7 +818,7 @@ app.post("/patients/:id/encounters", async (c) => {
     }
   }
 
-  await audit(c, "system", "encounter.create", "encounters", encounterId, null, body);
+  await audit(c, actorOf(c), "encounter.create", "encounters", encounterId, null, body);
   return c.json({ id: encounterId }, 201);
 });
 
@@ -461,7 +846,7 @@ app.get("/tasks", async (c) => {
   return c.json(results);
 });
 
-app.patch("/tasks/:id", async (c) => {
+app.patch("/tasks/:id", requireCap("tasks.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
   // Column names cannot be bound as parameters — allowlist them.
@@ -508,7 +893,9 @@ async function buildRefillPrompt(
   };
 }
 
-app.post("/refill-prompts", async (c) => {
+const REFILL_PROMPT_COLUMNS = new Set(["status", "quantity_needed", "order_by_date", "delivery_notes", "completed_at"]);
+
+app.post("/refill-prompts", requireCap("refills.write"), async (c) => {
   const body = await c.req.json();
   const { patient_id, medication_id, quantity_needed, order_by_date } = body;
 
@@ -554,7 +941,7 @@ app.post("/refill-prompts", async (c) => {
     )
     .run();
 
-  await audit(c, "system", "refill_prompt.generate", "refill_prompts", result.meta.last_row_id, null, prompt);
+  await audit(c, actorOf(c), "refill_prompt.generate", "refill_prompts", result.meta.last_row_id, null, prompt);
   return c.json({ id: result.meta.last_row_id, prompt }, 201);
 });
 
@@ -571,10 +958,11 @@ app.get("/refill-prompts", async (c) => {
   return c.json(results);
 });
 
-app.patch("/refill-prompts/:id", async (c) => {
+app.patch("/refill-prompts/:id", requireCap("refills.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
-  const fields = Object.keys(body);
+  // Column names cannot be bound as parameters — allowlist them.
+  const fields = Object.keys(body).filter((f) => REFILL_PROMPT_COLUMNS.has(f));
   if (fields.length === 0) return c.json({ error: "no fields" }, 400);
   const assignments: string[] = fields.map((f) => `${f} = ?`);
   const values: unknown[] = fields.map((f) => body[f]);
@@ -825,7 +1213,7 @@ export async function runExceptionMonitor(env: Env) {
 }
 
 // Manual trigger (also used by the scheduled cron)
-app.post("/exceptions/run", async (c) => {
+app.post("/exceptions/run", requireCap("monitor.run"), async (c) => {
   const result = await runExceptionMonitor(c.env);
   return c.json(result);
 });
@@ -945,7 +1333,7 @@ app.get("/patients/:id/status", async (c) => {
   });
 });
 
-app.patch("/patients/:id/medications/:mid/confirm", async (c) => {
+app.patch("/patients/:id/medications/:mid/confirm", requireCap("prescriptions.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const mid = Number(c.req.param("mid"));
   const current = await c.env.DB.prepare("SELECT * FROM medications WHERE id = ? AND patient_id = ?")
@@ -955,7 +1343,7 @@ app.patch("/patients/:id/medications/:mid/confirm", async (c) => {
   await c.env.DB.prepare(
     "UPDATE medications SET in_transit = 0, confirmed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
   ).bind(mid).run();
-  await audit(c, "system", "medication.confirm", "medications", mid, current, { in_transit: 0, confirmed_at: new Date().toISOString() });
+  await audit(c, actorOf(c), "medication.confirm", "medications", mid, current, { in_transit: 0, confirmed_at: new Date().toISOString() });
   const updated = await c.env.DB.prepare("SELECT * FROM medications WHERE id = ?").bind(mid).first();
   // Resolve receipt_unconfirmed exception for this patient
   await resolveOpen(c.env.DB, id, "receipt_unconfirmed");
@@ -999,7 +1387,7 @@ function sqlDateTime(input?: string): string {
   return t.toISOString().slice(0, 19).replace("T", " ");
 }
 
-app.post("/patients/:id/calls", async (c) => {
+app.post("/patients/:id/calls", requireCap("calls.write"), async (c) => {
   const pid = Number(c.req.param("id"));
   const body = await c.req.json();
   const calledAt = sqlDateTime(body.called_at);
@@ -1059,14 +1447,14 @@ app.post("/patients/:id/calls", async (c) => {
      VALUES (?, ?, ?, 'call', ?)`
   ).bind(pid, calledAt, body.notes || "Call logged (no notes)", callId).run();
 
-  await audit(c, "system", "call.create", "call_log", callId, null, { ...body, linked_medication_ids: linked });
+  await audit(c, actorOf(c), "call.create", "call_log", callId, null, { ...body, linked_medication_ids: linked });
   return c.json({ id: callId, medication_ids: linked }, 201);
 });
 
 // A call is often written up after the fact, so every field must be
 // correctable — the date and time especially. Editing the time also moves the
 // encounter this call created, or the contact clock would keep the wrong date.
-app.patch("/calls/:id", async (c) => {
+app.patch("/calls/:id", requireCap("calls.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
   const current = (await c.env.DB.prepare("SELECT * FROM call_log WHERE id = ?").bind(id).first()) as any;
@@ -1094,7 +1482,7 @@ app.patch("/calls/:id", async (c) => {
     ).run();
   }
 
-  await audit(c, "system", "call.update", "call_log", id, current, patch);
+  await audit(c, actorOf(c), "call.update", "call_log", id, current, patch);
   const updated = await c.env.DB.prepare("SELECT * FROM call_log WHERE id = ?").bind(id).first();
   return c.json(updated);
 });
@@ -1104,7 +1492,7 @@ app.patch("/calls/:id", async (c) => {
 // patient would still read as recently contacted. Any prescription status the
 // call changed is left alone: that was a clinical decision, and reversing it
 // silently because the note was deleted would be worse than leaving it.
-app.delete("/calls/:id", async (c) => {
+app.delete("/calls/:id", requireCap("calls.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const call = await c.env.DB.prepare("SELECT * FROM call_log WHERE id = ?").bind(id).first();
   if (!call) return c.json({ error: "not found" }, 404);
@@ -1115,7 +1503,7 @@ app.delete("/calls/:id", async (c) => {
   await c.env.DB.prepare("DELETE FROM encounters WHERE call_id = ?").bind(id).run();
   await c.env.DB.prepare("DELETE FROM call_log WHERE id = ?").bind(id).run();
 
-  await audit(c, "system", "call.delete", "call_log", id, call, null);
+  await audit(c, actorOf(c), "call.delete", "call_log", id, call, null);
   return c.json({ deleted: true });
 });
 
@@ -1150,16 +1538,16 @@ app.get("/patients/:id/calls", async (c) => {
 // Archive / delete patient
 // ---------------------------------------------------------------------------
 
-app.patch("/patients/:id/archive", async (c) => {
+app.patch("/patients/:id/archive", requireCap("patients.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const current = await c.env.DB.prepare("SELECT * FROM patients WHERE id = ?").bind(id).first();
   if (!current) return c.json({ error: "not found" }, 404);
   await c.env.DB.prepare("UPDATE patients SET archived = 1, updated_at = datetime('now') WHERE id = ?").bind(id).run();
-  await audit(c, "system", "patient.archive", "patients", id, current, { archived: 1 });
+  await audit(c, actorOf(c), "patient.archive", "patients", id, current, { archived: 1 });
   return c.json({ archived: true });
 });
 
-app.patch("/patients/:id/unarchive", async (c) => {
+app.patch("/patients/:id/unarchive", requireCap("patients.write"), async (c) => {
   const id = Number(c.req.param("id"));
   const current = await c.env.DB.prepare("SELECT * FROM patients WHERE id = ?").bind(id).first();
   if (!current) return c.json({ error: "not found" }, 404);
@@ -1309,6 +1697,8 @@ app.get("/admin/stats", adminAuth, async (c) => {
 // Feedback (team input capture — drive updates from plain sentences)
 // ---------------------------------------------------------------------------
 
+const FEEDBACK_COLUMNS = new Set(["status", "category", "body", "submitted_by", "notes"]);
+
 app.post("/feedback", async (c) => {
   const body = await c.req.json();
   if (!body.body || !body.body.trim()) {
@@ -1325,7 +1715,7 @@ app.post("/feedback", async (c) => {
       body.context || null
     )
     .run();
-  await audit(c, "system", "feedback.create", "feedback", result.meta.last_row_id, null, body);
+  await audit(c, actorOf(c), "feedback.create", "feedback", result.meta.last_row_id, null, body);
   return c.json({ id: result.meta.last_row_id, status: "new" }, 201);
 });
 
@@ -1341,10 +1731,11 @@ app.get("/feedback", async (c) => {
   return c.json(results);
 });
 
-app.patch("/feedback/:id", async (c) => {
+app.patch("/feedback/:id", requireCap("feedback.admin"), async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
-  const fields = Object.keys(body);
+  // Column names cannot be bound as parameters — allowlist them.
+  const fields = Object.keys(body).filter((f) => FEEDBACK_COLUMNS.has(f));
   if (fields.length === 0) return c.json({ error: "no fields" }, 400);
   const assignments: string[] = fields.map((f) => `${f} = ?`);
   const values: unknown[] = fields.map((f) => body[f]);

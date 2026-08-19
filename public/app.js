@@ -133,6 +133,266 @@ async function checkForUpdate() {
 }
 checkForUpdate();
 
+// ---- Identity -------------------------------------------------------------
+// The app stays behind the sign-in gate until /auth/me says who this is. The
+// shared team token is still accepted so nobody is locked out while accounts
+// are being set up; it reports as a legacy session.
+const CAP_LABELS = {
+  "patients.read": "See patients and the status board",
+  "patients.write": "Add and edit patients",
+  "prescriptions.write": "Manage prescriptions",
+  "calls.write": "Log and edit calls",
+  "tasks.write": "Complete tasks",
+  "refills.write": "Generate and complete refills",
+  "monitor.run": "Run the exception monitor",
+  "feedback.admin": "Manage the feedback queue",
+  "users.manage": "Manage people and access",
+};
+
+const session = { user: null, legacy: false, caps: new Set() };
+const can = (cap) => session.legacy || session.caps.has(cap);
+
+function showGate(show) {
+  $("#signInGate").classList.toggle("hidden", !show);
+  document.body.style.overflow = show ? "hidden" : "";
+}
+
+async function establishSession() {
+  if (!state.token) { showGate(true); return false; }
+  try {
+    const res = await fetch(apiPath("/auth/me"), { headers: { Authorization: `Bearer ${state.token}` } });
+    if (res.status === 401) { state.token = ""; localStorage.removeItem("mivida_token"); showGate(true); return false; }
+    const me = await res.json();
+    session.legacy = !!me.legacy;
+    session.user = me.user || null;
+    session.caps = new Set(me.capabilities || []);
+    showGate(false);
+    applyCapabilities();
+    if (session.user && session.user.must_change_password) $("#passwordModal").showModal();
+    return true;
+  } catch (e) {
+    showGate(true);
+    return false;
+  }
+}
+
+// Hide what this account cannot do, so nobody is offered a button that 403s.
+function applyCapabilities() {
+  document.querySelector(".tab-users")?.classList.toggle("hidden", !can("users.manage"));
+  $("#btnAddPatient")?.classList.toggle("hidden", !can("patients.write"));
+  document.body.dataset.readonly = can("patients.write") ? "" : "1";
+}
+
+$("#btnSignIn").addEventListener("click", async () => {
+  const email = $("#siEmail").value.trim();
+  const password = $("#siPassword").value;
+  if (!email || !password) { $("#siMsg").textContent = "Enter your email and password."; return; }
+  await withBusy($("#btnSignIn"), "Signing in…", async () => {
+    try {
+      const res = await fetch(apiPath("/auth/login"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) { $("#siMsg").textContent = data.message || "Sign in failed."; return; }
+      state.token = data.token;
+      localStorage.setItem("mivida_token", data.token);
+      $("#siPassword").value = "";
+      $("#siMsg").textContent = "";
+      await establishSession();
+      loadDashboard();
+    } catch (e) {
+      $("#siMsg").textContent = "Could not reach the server.";
+    }
+  });
+});
+
+$("#siPassword").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#btnSignIn").click(); });
+
+$("#btnUseToken").addEventListener("click", async () => {
+  const t = $("#siToken").value.trim();
+  if (!t) return;
+  state.token = t;
+  localStorage.setItem("mivida_token", t);
+  if (await establishSession()) loadDashboard();
+  else $("#siMsg").textContent = "That token was not accepted.";
+});
+
+$("#btnWho").addEventListener("click", () => {
+  const u = session.user;
+  $("#accountBody").innerHTML = u
+    ? `<dl class="kv">
+         <dt>Signed in as</dt><dd>${esc(u.name)}</dd>
+         <dt>Email</dt><dd>${esc(u.email)}</dd>
+         <dt>Role</dt><dd>${esc(u.role.replace("_", " "))}</dd>
+         <dt>Allowed to</dt><dd>${u.capabilities.map((cp) => esc(CAP_LABELS[cp] || cp)).join("<br>") || "—"}</dd>
+       </dl>`
+    : `<p class="muted small">Signed in with the shared team token. Actions are recorded as
+       <strong>legacy-token</strong> rather than against a person — ask a super-admin for your own account.</p>`;
+  $("#btnChangePassword").classList.toggle("hidden", !u);
+  $("#accountModal").showModal();
+});
+
+$("#btnSignOut").addEventListener("click", async () => {
+  try { await api("POST", "/auth/logout"); } catch (e) { /* leaving anyway */ }
+  localStorage.removeItem("mivida_token");
+  state.token = "";
+  location.reload();
+});
+
+$("#btnChangePassword").addEventListener("click", () => {
+  $("#accountModal").close();
+  $("#passwordModal").showModal();
+});
+
+$("#btnSavePassword").addEventListener("click", async () => {
+  const cur = $("#pwCurrent").value, next = $("#pwNew").value, confirmPw = $("#pwConfirm").value;
+  if (next.length < 12) { $("#pwMsg").textContent = "New password must be at least 12 characters."; return; }
+  if (next !== confirmPw) { $("#pwMsg").textContent = "The two new passwords do not match."; return; }
+  await withBusy($("#btnSavePassword"), "Saving…", async () => {
+    try {
+      await api("POST", "/auth/password", { current_password: cur, new_password: next });
+      $("#passwordModal").close();
+      $("#pwCurrent").value = $("#pwNew").value = $("#pwConfirm").value = "";
+      if (session.user) session.user.must_change_password = false;
+      toast("Password updated.");
+    } catch (e) {
+      $("#pwMsg").textContent = e.message;
+    }
+  });
+});
+
+// ---- People and access ----------------------------------------------------
+let editingUser = null;
+
+function capCheckboxes(selected) {
+  return Object.entries(CAP_LABELS).map(([cap, label]) => `
+    <label class="rx-option">
+      <input type="checkbox" class="us-cap" value="${cap}" ${selected.includes(cap) ? "checked" : ""} />
+      <span>${esc(label)}</span>
+    </label>`).join("");
+}
+
+async function loadUsers() {
+  const list = $("#usersList");
+  try {
+    const users = await api("GET", "/users");
+    list.innerHTML = users.map((u) => `
+      <div class="card ${u.status === "archived" ? "is-archived" : ""}">
+        <div class="card-head">
+          <strong>${esc(u.name)}</strong>
+          <span class="row">
+            ${u.status === "archived" ? `<span class="badge badge-low">archived</span>` : ""}
+            <span class="badge badge-muted">${esc(u.role.replace("_", " "))}</span>
+          </span>
+        </div>
+        <dl class="kv">
+          <dt>Email</dt><dd>${esc(u.email)}</dd>
+          <dt>Allowed to</dt><dd>${u.capabilities.map((cp) => esc(CAP_LABELS[cp] || cp)).join("<br>") || "Nothing yet"}</dd>
+          <dt>Last signed in</dt><dd>${u.last_login_at ? esc(fmtDateTime(u.last_login_at)) : "Never"}</dd>
+        </dl>
+        <div class="card-actions">
+          <button class="btn btn-sm" data-uedit="${u.id}">Edit</button>
+          <button class="btn btn-sm" data-ureset="${u.id}">Reset password</button>
+          ${u.status === "archived"
+            ? `<button class="btn btn-sm" data-urestore="${u.id}">Restore</button>`
+            : `<button class="btn btn-sm btn-danger" data-uarchive="${u.id}">Archive</button>`}
+        </div>
+      </div>`).join("") || `<div class="muted">Nobody yet.</div>`;
+  } catch (e) {
+    list.innerHTML = `<div class="card">${esc(e.message)}</div>`;
+  }
+}
+
+function openUserForm(user) {
+  editingUser = user;
+  $("#userModalTitle").textContent = user ? "Edit person" : "Add person";
+  $("#usName").value = user ? user.name : "";
+  $("#usEmail").value = user ? user.email : "";
+  $("#usRole").value = user ? user.role : "staff";
+  $("#usCaps").innerHTML = capCheckboxes(user ? user.capabilities : ROLE_CAPS.staff || []);
+  $("#usMsg").textContent = "";
+  $("#userModal").showModal();
+}
+
+// Changing role re-seeds the checkboxes; individual boxes stay editable after.
+let ROLE_CAPS = {};
+$("#usRole").addEventListener("change", () => {
+  $("#usCaps").innerHTML = capCheckboxes(ROLE_CAPS[$("#usRole").value] || []);
+});
+
+$("#btnAddUser").addEventListener("click", () => openUserForm(null));
+
+$("#btnSaveUser").addEventListener("click", async () => {
+  const body = {
+    name: $("#usName").value.trim(),
+    email: $("#usEmail").value.trim(),
+    role: $("#usRole").value,
+    capabilities: [...document.querySelectorAll(".us-cap:checked")].map((el) => el.value),
+  };
+  if (!body.name || !body.email) { $("#usMsg").textContent = "Name and email are required."; return; }
+  await withBusy($("#btnSaveUser"), "Saving…", async () => {
+    try {
+      if (editingUser) {
+        await api("PATCH", "/users/" + editingUser.id, body);
+        toast("Updated.");
+      } else {
+        const res = await api("POST", "/users", body);
+        showTemporaryPassword(body.name, res.temporary_password);
+      }
+      $("#userModal").close();
+      loadUsers();
+    } catch (e) {
+      $("#usMsg").textContent = e.message;
+    }
+  });
+});
+
+// The generated password is shown once and never stored in readable form.
+function showTemporaryPassword(name, password) {
+  $("#accountBody").innerHTML = `
+    <p class="small">${esc(name)} can now sign in with this temporary password. It is shown once —
+    pass it on directly, and they will be asked to choose their own.</p>
+    <p class="temp-password">${esc(password)}</p>`;
+  $("#btnChangePassword").classList.add("hidden");
+  $("#btnSignOut").classList.add("hidden");
+  $("#accountModal").showModal();
+}
+
+$("#usersList").addEventListener("click", async (e) => {
+  const edit = e.target.closest("[data-uedit]");
+  if (edit) {
+    const users = await api("GET", "/users");
+    return openUserForm(users.find((u) => u.id === Number(edit.dataset.uedit)));
+  }
+  const reset = e.target.closest("[data-ureset]");
+  if (reset) {
+    if (!confirm("Reset this person's password?\n\nTheir current password stops working immediately and they are signed out everywhere.")) return;
+    try {
+      const res = await api("POST", `/users/${Number(reset.dataset.ureset)}/reset-password`);
+      showTemporaryPassword("They", res.temporary_password);
+    } catch (err) { toast("Error: " + err.message); }
+    return;
+  }
+  const arch = e.target.closest("[data-uarchive]");
+  if (arch) {
+    if (!confirm("Archive this person?\n\nThey are signed out immediately and cannot sign in again. Their record of what they did is kept.")) return;
+    try {
+      await api("PATCH", "/users/" + Number(arch.dataset.uarchive), { status: "archived" });
+      toast("Archived."); loadUsers();
+    } catch (err) { toast(err.message); }
+    return;
+  }
+  const restore = e.target.closest("[data-urestore]");
+  if (restore) {
+    try {
+      await api("PATCH", "/users/" + Number(restore.dataset.urestore), { status: "active" });
+      toast("Restored."); loadUsers();
+    } catch (err) { toast(err.message); }
+  }
+});
+
 // ---- Tabs ----
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -953,10 +1213,13 @@ $("#btnSaveSettings").addEventListener("click", () => {
 })();
 
 // ---- Init ----
-(function init() {
+// Nothing loads until we know who this is — an unauthenticated boot would fire
+// a screenful of 401s behind the sign-in gate.
+establishSession().then((ok) => {
+  if (!ok) return;
   loadDashboard();
   loadDeployCount();
-})();
+});
 
 // ---- What's New (deploy events) ----
 let lastDeploySeen = localStorage.getItem("mivida_last_deploy_id") || "0";
@@ -1455,7 +1718,11 @@ $("#showArchived").addEventListener("change", loadPatients);
 // Hook up tab switching for new tabs
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
-    if (tab.dataset.view === "unseen") loadUnseen();
+      if (tab.dataset.view === "users") {
+      api("GET", "/users/capabilities").then((d) => { ROLE_CAPS = d.roles || {}; }).catch(() => {});
+      loadUsers();
+    }
+  if (tab.dataset.view === "unseen") loadUnseen();
     if (tab.dataset.view === "prescribing") loadPrescribing();
   });
 });
