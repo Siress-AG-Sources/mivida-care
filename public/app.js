@@ -106,6 +106,33 @@ async function withBusy(btn, busyLabel, fn) {
   }
 }
 
+// A cached index.html keeps requesting the same ?v= bundle forever, which is how
+// a phone ends up running an old build with no sign that anything is wrong. The
+// running bundle checks what the server actually has and offers a real reload.
+const APP_VERSION = "26";
+
+async function checkForUpdate() {
+  try {
+    const res = await fetch("/health", { cache: "no-store" });
+    const { version } = await res.json();
+    if (!version || String(version) === APP_VERSION) return;
+    const bar = document.createElement("div");
+    bar.className = "update-bar";
+    bar.innerHTML = `<span>This page is out of date (v${APP_VERSION} — v${esc(String(version))} is live).</span>
+      <button class="btn btn-sm btn-primary" id="btnReloadApp">Reload</button>`;
+    document.body.appendChild(bar);
+    $("#btnReloadApp").addEventListener("click", async () => {
+      if (window.caches) {
+        try { for (const k of await caches.keys()) await caches.delete(k); } catch (e) { /* best effort */ }
+      }
+      location.replace(location.pathname + "?r=" + Date.now());
+    });
+  } catch (e) {
+    /* offline or blocked — nothing to do */
+  }
+}
+checkForUpdate();
+
 // ---- Tabs ----
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {

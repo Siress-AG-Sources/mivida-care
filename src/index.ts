@@ -116,7 +116,11 @@ async function adminAuth(c: any, next: any) {
 }
 
 // Health check (no auth required — useful for debugging binding issues)
-app.get("/health", (c) => c.json({ ok: true, env: c.env.ENVIRONMENT }));
+// Not exported: a Workers module may only export the handler (and Durable
+// Object classes). An extra named export fails the runtime at startup.
+const APP_VERSION = "26";
+
+app.get("/health", (c) => c.json({ ok: true, env: c.env.ENVIRONMENT, version: APP_VERSION }));
 
 // Debug: dump all env keys (excludes values) to diagnose secret binding
 // ADMIN-ONLY: gated behind adminAuth to prevent env key name leakage

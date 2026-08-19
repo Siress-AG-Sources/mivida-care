@@ -1,0 +1,8 @@
+# The HTML holds the ?v= cache-busters for app.js and styles.css. If a browser
+# caches it, the busters never change and the device is stranded on an old
+# bundle — which is exactly what happened after v24: the page kept asking for
+# app.js?v=24 and served its own cached copy of it.
+/
+  Cache-Control: no-store
+/index.html
+  Cache-Control: no-store
