@@ -311,17 +311,31 @@ async function openPatient(id) {
       <dt>Next order by</dt><dd>${esc(fmtDate(st.next_order_by))}</dd>
       <dt>Last contact</dt><dd>${esc(fmtDate(st.last_encounter?.occurred_at))}</dd>
     </dl>
-    <h3 class="section-title" style="margin-top:16px">Medications</h3>
+    <div class="card-head" style="margin-top:16px">
+      <h3 class="section-title" style="margin-bottom:0">Prescriptions</h3>
+      <button class="btn btn-sm btn-primary" id="btnAddMed" data-pid="${st.patient.id}">+ Add prescription</button>
+    </div>
     ${(st.medications || []).map((m) => `
-      <div class="exception-item" id="med-${m.id}">
-        <strong>${esc(m.name)}</strong> ${esc(m.dose || "")}
+      <div class="exception-item rx-row ${m.status === "discontinued" ? "is-discontinued" : ""}" id="med-${m.id}">
+        <div class="row">
+          <strong>${esc(m.name)}</strong> <span>${esc(m.dose || "")}</span>
+          ${m.status === "discontinued" ? `<span class="badge badge-low">discontinued</span>` : ""}
+        </div>
         <div class="muted small">
           exhausts ${esc(fmtDate(m.estimated_exhaustion_date))} · order by ${esc(fmtDate(m.order_by_date))}
           · quantity ${esc(m.quantity ?? "?")} · ${m.in_transit ? "in transit" : "on hand"}
           ${m.confirmed_at ? `· confirmed ${esc(fmtDate(m.confirmed_at))}` : ""}
-          ${!m.confirmed_at && m.in_transit ? `<button class="btn btn-sm btn-primary confirm-btn" style="margin-left:8px" data-pid="${st.patient.id}" data-mid="${m.id}">✓ Confirm receipt</button>` : ""}
+          ${m.discontinued_at ? `· stopped ${esc(fmtDate(m.discontinued_at))}${m.discontinued_reason ? " — " + esc(m.discontinued_reason) : ""}` : ""}
         </div>
-      </div>`).join("") || `<div class="muted">No medications.</div>`}
+        <div class="card-actions">
+          ${!m.confirmed_at && m.in_transit ? `<button class="btn btn-sm btn-primary confirm-btn" data-pid="${st.patient.id}" data-mid="${m.id}">✓ Confirm receipt</button>` : ""}
+          <button class="btn btn-sm" data-medit="${m.id}" data-pid="${st.patient.id}">Edit</button>
+          ${m.status === "discontinued"
+            ? `<button class="btn btn-sm" data-mresume="${m.id}" data-pid="${st.patient.id}">Resume</button>`
+            : `<button class="btn btn-sm" data-mstop="${m.id}" data-pid="${st.patient.id}">Discontinue</button>`}
+          <button class="btn btn-sm btn-danger" data-mdel="${m.id}" data-pid="${st.patient.id}">Delete</button>
+        </div>
+      </div>`).join("") || `<div class="muted">No prescriptions on file.</div>`}
     <h3 class="section-title" style="margin-top:16px">Current cycle</h3>
     ${st.current_cycle ? `
       <div><strong>${esc(st.current_cycle.cycle_type || "—")}</strong>
@@ -350,6 +364,56 @@ async function openPatient(id) {
   if (!dlg.open) dlg.showModal();
   loadCalls(st.patient.id);
 }
+
+// ---- Add / edit prescription ----
+const MED_FIELDS = [
+  ["mdName", "name"], ["mdDose", "dose"], ["mdQty", "quantity"],
+  ["mdRefillQty", "refill_quantity"], ["mdStart", "start_date"],
+  ["mdExhaust", "estimated_exhaustion_date"], ["mdOrderBy", "order_by_date"],
+  ["mdNotes", "delivery_notes"],
+];
+let medContext = { patientId: null, medId: null };
+
+async function openMedForm(patientId, medId) {
+  medContext = { patientId, medId };
+  $("#mdMsg").textContent = "";
+  $("#medModalTitle").textContent = medId ? "Edit prescription" : "Add prescription";
+  let m = {};
+  if (medId) {
+    const meds = await api("GET", `/patients/${patientId}/medications`);
+    m = meds.find((x) => x.id === medId) || {};
+  }
+  for (const [el, key] of MED_FIELDS) $("#" + el).value = m[key] ?? "";
+  $("#mdInTransit").checked = !!m.in_transit;
+  $("#medModal").showModal();
+}
+
+$("#btnSaveMed").addEventListener("click", async () => {
+  const name = $("#mdName").value.trim();
+  if (!name) { $("#mdMsg").textContent = "Medication name is required."; return; }
+  const body = {
+    name,
+    dose: $("#mdDose").value.trim() || null,
+    quantity: Number($("#mdQty").value) || null,
+    refill_quantity: Number($("#mdRefillQty").value) || null,
+    start_date: $("#mdStart").value || null,
+    estimated_exhaustion_date: $("#mdExhaust").value || null,
+    order_by_date: $("#mdOrderBy").value || null,
+    in_transit: $("#mdInTransit").checked ? 1 : 0,
+    delivery_notes: $("#mdNotes").value.trim() || null,
+  };
+  try {
+    if (medContext.medId) await api("PATCH", "/medications/" + medContext.medId, body);
+    else await api("POST", `/patients/${medContext.patientId}/medications`, body);
+    await api("POST", "/exceptions/run");
+    $("#medModal").close();
+    toast(medContext.medId ? "Prescription updated." : "Prescription added.");
+    await openPatient(medContext.patientId);
+    loadDashboard();
+  } catch (e) {
+    $("#mdMsg").textContent = "Error: " + e.message;
+  }
+});
 
 // ---- Call log ----
 function callFormHtml(patientId, meds) {
@@ -421,6 +485,62 @@ $("#patientModal").addEventListener("click", async (e) => {
     }
     return;
   }
+  const add = e.target.closest("#btnAddMed");
+  if (add) return openMedForm(Number(add.dataset.pid), null);
+
+  const edit = e.target.closest("[data-medit]");
+  if (edit) return openMedForm(Number(edit.dataset.pid), Number(edit.dataset.medit));
+
+  const stop = e.target.closest("[data-mstop]");
+  if (stop) {
+    const reason = prompt("Discontinue this prescription. Reason (optional):");
+    if (reason === null) return;
+    try {
+      await api("PATCH", "/medications/" + Number(stop.dataset.mstop), {
+        status: "discontinued",
+        discontinued_at: new Date().toISOString().slice(0, 10),
+        discontinued_reason: reason.trim() || null,
+      });
+      await api("POST", "/exceptions/run");
+      toast("Prescription discontinued.");
+      await openPatient(Number(stop.dataset.pid));
+      loadDashboard();
+    } catch (err) { toast("Error: " + err.message); }
+    return;
+  }
+
+  const resume = e.target.closest("[data-mresume]");
+  if (resume) {
+    try {
+      await api("PATCH", "/medications/" + Number(resume.dataset.mresume), {
+        status: "active", discontinued_at: null, discontinued_reason: null,
+      });
+      await api("POST", "/exceptions/run");
+      toast("Prescription resumed.");
+      await openPatient(Number(resume.dataset.pid));
+      loadDashboard();
+    } catch (err) { toast("Error: " + err.message); }
+    return;
+  }
+
+  const del = e.target.closest("[data-mdel]");
+  if (del) {
+    if (!confirm("Delete this prescription entirely?\n\nUse this only for something entered in error. If the patient actually took it and stopped, use Discontinue instead so it stays in the record.")) return;
+    try {
+      await api("DELETE", "/medications/" + Number(del.dataset.mdel));
+      await api("POST", "/exceptions/run");
+      toast("Prescription deleted.");
+      await openPatient(Number(del.dataset.pid));
+      loadDashboard();
+    } catch (err) {
+      // The API refuses to delete a prescription a logged call refers to.
+      toast(err.message.includes("referenced_by_calls")
+        ? "That prescription is referenced by a logged call — discontinue it instead."
+        : "Error: " + err.message);
+    }
+    return;
+  }
+
   const taskBox = e.target.closest(".task-done");
   if (taskBox && taskBox.checked) {
     const { task, pid } = taskBox.dataset;

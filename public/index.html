@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=21" />
+  <link rel="stylesheet" href="/styles.css?v=22" />
 </head>
 <body>
   <header class="topbar">
@@ -18,7 +18,7 @@
       </div>
     </div>
 
-    <span class="version-tag" title="v21">v21</span>
+    <span class="version-tag" title="v22">v22</span>
 
     <div class="topbar-right">
       <span id="connStatus" class="conn conn-off" role="status" aria-live="polite">
@@ -268,6 +268,32 @@
       </div>
     </dialog>
 
+    <!-- ADD / EDIT PRESCRIPTION MODAL -->
+    <dialog id="medModal" class="modal">
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2 class="section-title" id="medModalTitle">Add prescription</h2>
+          <button class="btn btn-ghost" onclick="document.getElementById('medModal').close()">✕</button>
+        </div>
+        <label class="field"><span>Medication name*</span><input id="mdName" type="text" placeholder="e.g. Lisinopril" /></label>
+        <label class="field"><span>Dose</span><input id="mdDose" type="text" placeholder="e.g. 10mg once daily" /></label>
+        <label class="field"><span>Quantity on hand</span><input id="mdQty" type="number" min="0" /></label>
+        <label class="field"><span>Refill quantity</span><input id="mdRefillQty" type="number" min="0" /></label>
+        <label class="field"><span>Start date</span><input id="mdStart" type="date" /></label>
+        <label class="field"><span>Estimated exhaustion date</span><input id="mdExhaust" type="date" /></label>
+        <label class="field"><span>Order by date</span><input id="mdOrderBy" type="date" /></label>
+        <label class="toggle-inline" style="margin-bottom:12px">
+          <input id="mdInTransit" type="checkbox" />
+          <span>Currently in transit</span>
+        </label>
+        <label class="field"><span>Delivery notes</span><textarea id="mdNotes" rows="2" placeholder="Courier, pharmacy, special handling"></textarea></label>
+        <div class="row-end">
+          <button id="btnSaveMed" class="btn btn-primary">Save prescription</button>
+        </div>
+        <p id="mdMsg" class="muted small"></p>
+      </div>
+    </dialog>
+
     <!-- WHAT'S NEW MODAL (deploy announcements) -->
     <dialog id="whatsNewModal" class="modal">
       <div class="modal-body">
@@ -333,6 +359,6 @@
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=21"></script>
+  <script src="/app.js?v=22"></script>
 </body>
 </html>

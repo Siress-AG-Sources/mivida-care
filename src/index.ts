@@ -218,6 +218,21 @@ app.patch("/patients/:id", async (c) => {
 // Medications
 // ---------------------------------------------------------------------------
 
+const MEDICATION_COLUMNS = new Set([
+  "name",
+  "dose",
+  "quantity",
+  "refill_quantity",
+  "start_date",
+  "estimated_exhaustion_date",
+  "order_by_date",
+  "in_transit",
+  "delivery_notes",
+  "status",
+  "discontinued_at",
+  "discontinued_reason",
+]);
+
 app.get("/patients/:id/medications", async (c) => {
   const id = Number(c.req.param("id"));
   const { results } = await c.env.DB.prepare(
@@ -254,11 +269,38 @@ app.post("/patients/:id/medications", async (c) => {
   return c.json({ id: result.meta.last_row_id }, 201);
 });
 
+// Hard delete, for a prescription entered in error. A prescription the patient
+// actually took should be discontinued instead (PATCH status), which keeps it in
+// the record. Refused when a logged call references it, because deleting would
+// silently rewrite that call's history — discontinue is the right move there.
+app.delete("/medications/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const med = await c.env.DB.prepare("SELECT * FROM medications WHERE id = ?").bind(id).first();
+  if (!med) return c.json({ error: "not found" }, 404);
+
+  const calls = (await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM call_medications WHERE medication_id = ?"
+  ).bind(id).first()) as { n: number };
+  if (calls.n > 0) {
+    return c.json({
+      error: "referenced_by_calls",
+      calls: calls.n,
+      message: `This prescription is referenced by ${calls.n} logged call(s). Discontinue it instead so the call history stays intact.`,
+    }, 409);
+  }
+
+  await c.env.DB.prepare("DELETE FROM refill_prompts WHERE medication_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM medications WHERE id = ?").bind(id).run();
+  await audit(c, "system", "medication.delete", "medications", id, med, null);
+  return c.json({ deleted: true });
+});
+
 app.patch("/medications/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
-  const fields = Object.keys(body);
-  if (fields.length === 0) return c.json({ error: "no fields" }, 400);
+  // Column names cannot be bound as parameters — allowlist them.
+  const fields = Object.keys(body).filter((f) => MEDICATION_COLUMNS.has(f));
+  if (fields.length === 0) return c.json({ error: "no updatable fields" }, 400);
   const assignments = fields.map((f) => `${f} = ?`).join(", ");
   const values = fields.map((f) => body[f]);
   await c.env.DB.prepare(
@@ -603,7 +645,10 @@ export async function runExceptionMonitor(env: Env) {
       if (!exDateRaw) continue;
       const exDate = exDateRaw.slice(0, 10);
       const daysLeft = Math.floor((new Date(exDate).getTime() - Date.now()) / 86400000);
-      if (daysLeft <= exhaustionLead) {
+      // A discontinued prescription still sits inside its exhaustion window, so
+      // it must be treated as "not running out" — falling through to the else
+      // branch is what resolves any exception already raised for it.
+      if (daysLeft <= exhaustionLead && (m as any).status !== "discontinued") {
         await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "medication_running_out", severity: daysLeft <= 7 ? "high" : "medium", details: `${m.name} exhausts ${exDate} (${daysLeft} days)` }, `%${m.name}%`);
       } else {
         // No longer running out — clear stale exception for this med
@@ -617,6 +662,24 @@ export async function runExceptionMonitor(env: Env) {
         await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "prompt_uncompleted", severity: "medium", details: `${m.name} has an uncompleted refill prompt` }, `%${m.name}%`);
       } else {
         await resolveOpen(db, p.id, "prompt_uncompleted", `%${m.name}%`);
+      }
+    }
+
+    // Medications that were deleted outright are never visited by the loop, so
+    // their open exceptions would otherwise persist for good. The monitor writes
+    // details starting with the medication name, so anything that no longer
+    // matches a medication on file is stale.
+    const liveNames = meds.map((m) => m.name);
+    for (const type of ["medication_running_out", "prompt_uncompleted"]) {
+      const { results: stale } = await db.prepare(
+        `SELECT id, details FROM exceptions
+         WHERE patient_id = ? AND exception_type = ? AND resolved_date IS NULL`
+      ).bind(p.id, type).all();
+      for (const row of stale as any[]) {
+        if (!liveNames.some((n) => String(row.details || "").startsWith(n))) {
+          await db.prepare("UPDATE exceptions SET resolved_date = ? WHERE id = ?")
+            .bind(new Date().toISOString().slice(0, 10), row.id).run();
+        }
       }
     }
 
