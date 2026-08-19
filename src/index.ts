@@ -273,6 +273,51 @@ app.post("/patients/:id/medications", async (c) => {
 // actually took should be discontinued instead (PATCH status), which keeps it in
 // the record. Refused when a logged call references it, because deleting would
 // silently rewrite that call's history — discontinue is the right move there.
+// Prescription tracking. Derived from what was actually recorded — no separate
+// events table to drift out of sync with the data it describes.
+app.get("/medications/:id/history", async (c) => {
+  const id = Number(c.req.param("id"));
+  const med = (await c.env.DB.prepare("SELECT * FROM medications WHERE id = ?").bind(id).first()) as any;
+  if (!med) return c.json({ error: "not found" }, 404);
+
+  const events: { at: string; kind: string; detail: string }[] = [];
+  if (med.start_date) events.push({ at: med.start_date, kind: "started", detail: `Started${med.dose ? " at " + med.dose : ""}` });
+  else if (med.created_at) events.push({ at: med.created_at, kind: "added", detail: "Added to the record" });
+
+  const { results: calls } = await c.env.DB.prepare(
+    `SELECT cl.called_at, cl.direction, cl.notes, cm.action
+     FROM call_medications cm JOIN call_log cl ON cl.id = cm.call_id
+     WHERE cm.medication_id = ?`
+  ).bind(id).all();
+  const ACTION_TEXT: Record<string, string> = {
+    no_change: "Discussed on call — no change",
+    refill_needed: "Refill flagged as needed on call",
+    dose_changed: "Dose changed on call",
+    discontinued: "Discontinued on call",
+  };
+  for (const r of calls as any[]) {
+    events.push({
+      at: r.called_at,
+      kind: "call",
+      detail: `${ACTION_TEXT[r.action] || "Discussed on call"}${r.notes ? " — " + r.notes : ""}`,
+    });
+  }
+
+  const { results: prompts } = await c.env.DB.prepare(
+    "SELECT created_at, status, completed_at, quantity_needed FROM refill_prompts WHERE medication_id = ?"
+  ).bind(id).all();
+  for (const r of prompts as any[]) {
+    if (r.created_at) events.push({ at: r.created_at, kind: "refill", detail: `Refill prompt generated${r.quantity_needed ? ` (qty ${r.quantity_needed})` : ""}` });
+    if (r.completed_at) events.push({ at: r.completed_at, kind: "refill", detail: "Refill marked ordered" });
+  }
+
+  if (med.confirmed_at) events.push({ at: med.confirmed_at, kind: "delivery", detail: "Delivery receipt confirmed" });
+  if (med.discontinued_at) events.push({ at: med.discontinued_at, kind: "stopped", detail: `Discontinued${med.discontinued_reason ? " — " + med.discontinued_reason : ""}` });
+
+  events.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  return c.json({ medication: med, events });
+});
+
 app.delete("/medications/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const med = await c.env.DB.prepare("SELECT * FROM medications WHERE id = ?").bind(id).first();
@@ -804,12 +849,17 @@ app.get("/patients/:id/status", async (c) => {
     return start <= new Date().toISOString().slice(0, 10) && end >= new Date().toISOString().slice(0, 10);
   }) || null;
 
-  const nextOrderBy = meds
+  // Discontinued prescriptions stay in `medications` so the detail view can show
+  // and resume them, but they must not drive the summary, the days-on-hand
+  // figure or the next order date — the patient is not taking them.
+  const activeMeds = meds.filter((m: any) => m.status !== "discontinued");
+  const nextOrderBy = activeMeds
     .map((m) => m.order_by_date || m.estimated_exhaustion_date)
     .filter(Boolean)
     .sort()[0] || null;
 
   const daysOnHand = (() => {
+    const meds = activeMeds;
     const ex = meds.map((m) => m.estimated_exhaustion_date).filter(Boolean).sort()[0];
     if (!ex) return null;
     return Math.max(0, Math.floor((new Date(ex.slice(0, 10)).getTime() - Date.now()) / 86400000));
@@ -826,7 +876,7 @@ app.get("/patients/:id/status", async (c) => {
     open_refill_prompts: openPrompts,
     open_tasks: openTasks,
     unresolved_exceptions: unresolvedExceptions,
-    status_text: `Taking ${meds.map((m) => m.name).join(", ") || "—"}; cycle ${currentCycle?.cycle_type || "—"} ends ${currentCycle?.end_date?.slice(0, 10) || "—"}; ~${daysOnHand ?? "?"} days of meds on hand; next order by ${nextOrderBy || "—"}; last contact ${lastEncounter?.occurred_at?.slice(0, 10) || "never"}.`,
+    status_text: `Taking ${activeMeds.map((m) => m.name).join(", ") || "nothing on file"}; cycle ${currentCycle?.cycle_type || "—"} ends ${currentCycle?.end_date?.slice(0, 10) || "—"}; ~${daysOnHand ?? "?"} days of meds on hand; next order by ${nextOrderBy || "—"}; last contact ${lastEncounter?.occurred_at?.slice(0, 10) || "never"}.`,
   });
 });
 
@@ -875,6 +925,8 @@ async function audit(
 // SQLite datetime format ("YYYY-MM-DD HH:MM:SS"). The exception monitor and the
 // 90-day list compare against datetime('now', ...), so anything stored in ISO
 // "T"/"Z" form would compare wrong. Accepts a datetime-local value too.
+const CALL_ACTIONS = new Set(["no_change", "refill_needed", "dose_changed", "discontinued"]);
+
 function sqlDateTime(input?: string): string {
   const d = input ? new Date(input) : new Date();
   const t = isNaN(d.getTime()) ? new Date() : d;
@@ -894,18 +946,42 @@ app.post("/patients/:id/calls", async (c) => {
 
   // Link the prescriptions discussed on the call. Only this patient's own
   // medications may be linked — never trust the ids straight off the body.
-  const requested = Array.isArray(body.medication_ids) ? body.medication_ids.map(Number).filter(Boolean) : [];
+  // Each entry is { id, action } — what was decided about that prescription on
+  // this call. Plain ids are still accepted and default to "no_change".
+  const raw = Array.isArray(body.medications)
+    ? body.medications
+    : (Array.isArray(body.medication_ids) ? body.medication_ids.map((id: any) => ({ id })) : []);
+  const wanted = new Map<number, string>();
+  for (const entry of raw) {
+    const id = Number(entry?.id ?? entry);
+    if (!id) continue;
+    const action = CALL_ACTIONS.has(entry?.action) ? entry.action : "no_change";
+    wanted.set(id, action);
+  }
+
   let linked: number[] = [];
-  if (requested.length) {
-    const placeholders = requested.map(() => "?").join(", ");
+  if (wanted.size) {
+    const ids = [...wanted.keys()];
+    const placeholders = ids.map(() => "?").join(", ");
     const { results } = await c.env.DB.prepare(
       `SELECT id FROM medications WHERE patient_id = ? AND id IN (${placeholders})`
-    ).bind(pid, ...requested).all();
+    ).bind(pid, ...ids).all();
     linked = results.map((r: any) => r.id as number);
     for (const mid of linked) {
+      const action = wanted.get(mid) || "no_change";
       await c.env.DB.prepare(
-        "INSERT OR IGNORE INTO call_medications (call_id, medication_id) VALUES (?, ?)"
-      ).bind(callId, mid).run();
+        "INSERT OR IGNORE INTO call_medications (call_id, medication_id, action) VALUES (?, ?, ?)"
+      ).bind(callId, mid, action).run();
+
+      // The decision has to actually move the prescription, or the call log is
+      // just documentation that quietly disagrees with the record.
+      if (action === "discontinued") {
+        await c.env.DB.prepare(
+          `UPDATE medications SET status = 'discontinued', discontinued_at = ?,
+             discontinued_reason = COALESCE(discontinued_reason, 'Discontinued on call'),
+             updated_at = datetime('now') WHERE id = ?`
+        ).bind(calledAt.slice(0, 10), mid).run();
+      }
     }
   }
 
@@ -933,7 +1009,7 @@ app.get("/patients/:id/calls", async (c) => {
   if (calls.length) {
     const placeholders = calls.map(() => "?").join(", ");
     const { results: links } = await c.env.DB.prepare(
-      `SELECT cm.call_id, m.id, m.name, m.dose
+      `SELECT cm.call_id, cm.action, m.id, m.name, m.dose
        FROM call_medications cm
        JOIN medications m ON m.id = cm.medication_id
        WHERE cm.call_id IN (${placeholders})
@@ -941,7 +1017,7 @@ app.get("/patients/:id/calls", async (c) => {
     ).bind(...calls.map((r) => r.id)).all();
     const byCall: Record<number, any[]> = {};
     for (const l of links as any[]) {
-      (byCall[l.call_id] ||= []).push({ id: l.id, name: l.name, dose: l.dose });
+      (byCall[l.call_id] ||= []).push({ id: l.id, name: l.name, dose: l.dose, action: l.action });
     }
     for (const call of calls) call.medications = byCall[call.id] || [];
   }

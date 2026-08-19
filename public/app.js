@@ -329,6 +329,7 @@ async function openPatient(id) {
         </div>
         <div class="card-actions">
           ${!m.confirmed_at && m.in_transit ? `<button class="btn btn-sm btn-primary confirm-btn" data-pid="${st.patient.id}" data-mid="${m.id}">✓ Confirm receipt</button>` : ""}
+          <button class="btn btn-sm" data-mhist="${m.id}" data-mname="${esc(m.name)}">History</button>
           <button class="btn btn-sm" data-medit="${m.id}" data-pid="${st.patient.id}">Edit</button>
           ${m.status === "discontinued"
             ? `<button class="btn btn-sm" data-mresume="${m.id}" data-pid="${st.patient.id}">Resume</button>`
@@ -363,6 +364,42 @@ async function openPatient(id) {
   const dlg = $("#patientModal");
   if (!dlg.open) dlg.showModal();
   loadCalls(st.patient.id);
+}
+
+const RX_ACTION_LABEL = {
+  no_change: "no change",
+  refill_needed: "refill needed",
+  dose_changed: "dose changed",
+  discontinued: "discontinued",
+};
+
+// ---- Prescription tracking ----
+async function openMedHistory(medId, medName) {
+  $("#rxHistoryTitle").textContent = medName || "Prescription history";
+  const box = $("#rxHistoryBody");
+  box.innerHTML = `<div class="muted small loading">Loading…</div>`;
+  $("#rxHistoryModal").showModal();
+  try {
+    const { medication, events } = await api("GET", `/medications/${medId}/history`);
+    box.innerHTML = `
+      <dl class="kv">
+        <dt>Status</dt><dd>${esc(medication.status || "active")}</dd>
+        <dt>Dose</dt><dd>${esc(medication.dose || "—")}</dd>
+        <dt>Quantity</dt><dd>${esc(medication.quantity ?? "—")}</dd>
+        <dt>Exhausts</dt><dd>${esc(fmtDate(medication.estimated_exhaustion_date))}</dd>
+        <dt>Order by</dt><dd>${esc(fmtDate(medication.order_by_date))}</dd>
+      </dl>
+      <h3 class="section-title" style="margin-top:16px">History</h3>
+      ${events.length
+        ? `<div class="stack">${events.map((ev) => `
+            <div class="rx-event rx-event-${esc(ev.kind)}">
+              <div class="small"><strong>${esc(fmtDate(ev.at))}</strong> · ${esc(ev.kind)}</div>
+              <div class="muted small">${esc(ev.detail)}</div>
+            </div>`).join("")}</div>`
+        : `<div class="muted small">Nothing recorded yet.</div>`}`;
+  } catch (e) {
+    box.innerHTML = `<div class="muted small">${esc(e.message)}</div>`;
+  }
 }
 
 // ---- Add / edit prescription ----
@@ -432,10 +469,18 @@ function callFormHtml(patientId, meds) {
       <legend>Prescriptions discussed</legend>
       ${meds.length
         ? meds.map((m) => `
-          <label class="rx-option">
-            <input type="checkbox" class="cl-med" value="${m.id}" />
-            <span><strong>${esc(m.name)}</strong>${m.dose ? " " + esc(m.dose) : ""}</span>
-          </label>`).join("")
+          <div class="rx-capture">
+            <label class="rx-option">
+              <input type="checkbox" class="cl-med" value="${m.id}" />
+              <span><strong>${esc(m.name)}</strong>${m.dose ? " " + esc(m.dose) : ""}</span>
+            </label>
+            <select class="field-input cl-med-action" data-for="${m.id}" disabled>
+              <option value="no_change">Discussed — no change</option>
+              <option value="refill_needed">Refill needed</option>
+              <option value="dose_changed">Dose changed</option>
+              <option value="discontinued">Discontinued</option>
+            </select>
+          </div>`).join("")
         : `<p class="muted small">No prescriptions on file for this patient.</p>`}
     </fieldset>
     <div class="row-end">
@@ -464,7 +509,9 @@ async function loadCalls(patientId) {
         ${c.notes ? `<p class="small" style="margin-top:6px">${esc(c.notes)}</p>` : `<p class="muted small" style="margin-top:6px">No notes.</p>`}
         ${(c.medications || []).length
           ? `<div class="row" style="margin-top:8px">${c.medications.map((m) =>
-              `<span class="badge badge-low">℞ ${esc(m.name)}${m.dose ? " " + esc(m.dose) : ""}</span>`).join("")}</div>`
+              `<span class="badge ${m.action && m.action !== "no_change" ? "badge-medium" : "badge-low"}">℞ ${esc(m.name)}${
+                m.action && m.action !== "no_change" ? " — " + esc(RX_ACTION_LABEL[m.action] || m.action) : ""
+              }</span>`).join("")}</div>`
           : ""}
       </div>`).join("");
   } catch (e) {
@@ -487,6 +534,9 @@ $("#patientModal").addEventListener("click", async (e) => {
   }
   const add = e.target.closest("#btnAddMed");
   if (add) return openMedForm(Number(add.dataset.pid), null);
+
+  const hist = e.target.closest("[data-mhist]");
+  if (hist) return openMedHistory(Number(hist.dataset.mhist), hist.dataset.mname);
 
   const edit = e.target.closest("[data-medit]");
   if (edit) return openMedForm(Number(edit.dataset.pid), Number(edit.dataset.medit));
@@ -541,6 +591,13 @@ $("#patientModal").addEventListener("click", async (e) => {
     return;
   }
 
+  const medTick = e.target.closest(".cl-med");
+  if (medTick) {
+    const sel = document.querySelector(`.cl-med-action[data-for="${medTick.value}"]`);
+    if (sel) sel.disabled = !medTick.checked;
+    return;
+  }
+
   const taskBox = e.target.closest(".task-done");
   if (taskBox && taskBox.checked) {
     const { task, pid } = taskBox.dataset;
@@ -572,7 +629,10 @@ $("#patientModal").addEventListener("click", async (e) => {
         direction: $("#clDirection").value,
         duration_minutes: Number($("#clDuration").value) || null,
         notes,
-        medication_ids: [...document.querySelectorAll(".cl-med:checked")].map((el) => Number(el.value)),
+        medications: [...document.querySelectorAll(".cl-med:checked")].map((el) => ({
+          id: Number(el.value),
+          action: document.querySelector(`.cl-med-action[data-for="${el.value}"]`)?.value || "no_change",
+        })),
       });
       await api("POST", "/exceptions/run");
       toast("Call logged.");

@@ -124,6 +124,14 @@ body { font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Seg
 /* ---- Call log ---- */
 .call-form { border: 1px solid var(--border); border-radius: var(--radius); background: var(--mint-light); padding: 14px; margin-top: 12px; }
 .call-form.hidden { display: none; }
+.rx-capture { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.rx-capture:last-child { border-bottom: none; }
+.rx-capture .cl-med-action { margin-top: 6px; font-size: 13px; }
+.rx-capture .cl-med-action:disabled { opacity: .45; }
+.rx-event { border-left: 3px solid var(--mint); padding: 2px 0 2px 10px; }
+.rx-event-stopped { border-left-color: var(--danger); }
+.rx-event-refill { border-left-color: var(--warn); }
+.rx-event-delivery { border-left-color: var(--good); }
 .rx-picker { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--card); }
 .rx-picker legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
 .rx-option { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; font-size: 14px; }
@@ -260,6 +268,7 @@ textarea:focus, select:focus, .field-input:focus { outline: none; border-color: 
   .task-row input { width: 22px; height: 22px; margin-top: 0; }
   .call-form { padding: 12px; }
   .rx-option { min-height: 44px; padding: 4px 0; }
+  .rx-capture .cl-med-action { min-height: 44px; font-size: 16px; }
   .rx-option input { width: 22px; height: 22px; }
   .card-actions { gap: 10px; }
   .card-actions .btn { min-height: 44px; }

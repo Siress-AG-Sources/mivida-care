@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=22" />
+  <link rel="stylesheet" href="/styles.css?v=23" />
 </head>
 <body>
   <header class="topbar">
@@ -18,7 +18,7 @@
       </div>
     </div>
 
-    <span class="version-tag" title="v22">v22</span>
+    <span class="version-tag" title="v23">v23</span>
 
     <div class="topbar-right">
       <span id="connStatus" class="conn conn-off" role="status" aria-live="polite">
@@ -294,6 +294,17 @@
       </div>
     </dialog>
 
+    <!-- PRESCRIPTION HISTORY MODAL -->
+    <dialog id="rxHistoryModal" class="modal">
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2 class="section-title" id="rxHistoryTitle">Prescription history</h2>
+          <button class="btn btn-ghost" onclick="document.getElementById('rxHistoryModal').close()">✕</button>
+        </div>
+        <div id="rxHistoryBody"></div>
+      </div>
+    </dialog>
+
     <!-- WHAT'S NEW MODAL (deploy announcements) -->
     <dialog id="whatsNewModal" class="modal">
       <div class="modal-body">
@@ -359,6 +370,6 @@
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=22"></script>
+  <script src="/app.js?v=23"></script>
 </body>
 </html>
