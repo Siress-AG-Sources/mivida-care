@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=18" />
+  <link rel="stylesheet" href="/styles.css?v=19" />
 </head>
 <body>
   <header class="topbar">
@@ -18,7 +18,7 @@
       </div>
     </div>
 
-    <span class="version-tag" title="v18">v18</span>
+    <span class="version-tag" title="v19">v19</span>
 
     <div class="topbar-right">
       <span id="connStatus" class="conn conn-off" role="status" aria-live="polite">
@@ -62,7 +62,13 @@
       <div class="card">
         <div class="card-head">
           <h2 class="section-title">Patients</h2>
-          <button id="btnAddPatient" class="btn btn-primary btn-sm">+ Add patient</button>
+          <div class="row">
+            <label class="toggle-inline">
+              <input id="showArchived" type="checkbox" />
+              <span>Show archived</span>
+            </label>
+            <button id="btnAddPatient" class="btn btn-primary btn-sm">+ Add patient</button>
+          </div>
         </div>
         <div id="patientsList" class="stack"></div>
       </div>
@@ -223,6 +229,45 @@
       </div>
     </dialog>
 
+    <!-- EDIT PATIENT MODAL -->
+    <dialog id="editPatientModal" class="modal">
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2 class="section-title">Edit patient</h2>
+          <button class="btn btn-ghost" onclick="document.getElementById('editPatientModal').close()">✕</button>
+        </div>
+        <label class="field"><span>Full name*</span><input id="epName" type="text" /></label>
+        <label class="field"><span>Date of birth</span><input id="epDob" type="date" /></label>
+        <label class="field"><span>Email</span><input id="epEmail" type="email" /></label>
+        <label class="field"><span>Phone</span><input id="epPhone" type="tel" /></label>
+        <label class="field"><span>Address</span><input id="epAddress" type="text" /></label>
+        <label class="field"><span>Insurance info</span><input id="epInsurance" type="text" /></label>
+        <label class="field"><span>Membership level</span>
+          <select id="epMembership" class="field-input">
+            <option value="">— select —</option>
+            <option value="standard">Standard</option>
+            <option value="premium">Premium</option>
+            <option value="concierge">Concierge</option>
+          </select>
+        </label>
+        <label class="field"><span>Treatment phase</span>
+          <select id="epPhase" class="field-input">
+            <option value="">— select —</option>
+            <option value="intake">Intake</option>
+            <option value="active">Active treatment</option>
+            <option value="maintenance">Maintenance</option>
+            <option value="follow-up">Follow-up</option>
+          </select>
+        </label>
+        <label class="field"><span>Contact interval (days)</span><input id="epInterval" type="number" min="1" /></label>
+        <label class="field"><span>Goals / notes</span><textarea id="epGoals" rows="3"></textarea></label>
+        <div class="row-end">
+          <button id="btnUpdatePatient" class="btn btn-primary">Save changes</button>
+        </div>
+        <p id="epMsg" class="muted small"></p>
+      </div>
+    </dialog>
+
     <!-- WHAT'S NEW MODAL (deploy announcements) -->
     <dialog id="whatsNewModal" class="modal">
       <div class="modal-body">
@@ -288,6 +333,6 @@
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=18"></script>
+  <script src="/app.js?v=19"></script>
 </body>
 </html>

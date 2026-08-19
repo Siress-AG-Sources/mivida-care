@@ -130,9 +130,27 @@ app.get("/debug", adminAuth, async (c) => {
 // Patients
 // ---------------------------------------------------------------------------
 
+const PATIENT_COLUMNS = new Set([
+  "name",
+  "date_of_birth",
+  "phone",
+  "address",
+  "email",
+  "membership_level",
+  "goals",
+  "treatment_phase",
+  "expected_contact_interval_days",
+  "insurance_info",
+  "archived",
+]);
+
+// Active patients by default; ?include_archived=1 also returns archived ones.
 app.get("/patients", async (c) => {
+  const includeArchived = c.req.query("include_archived") === "1";
   const { results } = await c.env.DB.prepare(
-    "SELECT * FROM patients ORDER BY name"
+    includeArchived
+      ? "SELECT * FROM patients ORDER BY archived, name"
+      : "SELECT * FROM patients WHERE archived = 0 ORDER BY name"
   ).all();
   return c.json(results);
 });
@@ -178,8 +196,10 @@ app.patch("/patients/:id", async (c) => {
     .bind(id)
     .first();
   if (!current) return c.json({ error: "not found" }, 404);
-  const fields = Object.keys(body);
-  if (fields.length === 0) return c.json({ error: "no fields" }, 400);
+  // Column names cannot be bound as parameters, so only ever interpolate
+  // names from this allowlist — never raw keys off the request body.
+  const fields = Object.keys(body).filter((f) => PATIENT_COLUMNS.has(f));
+  if (fields.length === 0) return c.json({ error: "no updatable fields" }, 400);
   const assignments = fields.map((f) => `${f} = ?`).join(", ");
   const values = fields.map((f) => body[f]);
   await c.env.DB.prepare(

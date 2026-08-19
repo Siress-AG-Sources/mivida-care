@@ -140,7 +140,8 @@ async function loadDashboard() {
 // ---- Patients ----
 async function loadPatients() {
   try {
-    const patients = await api("GET", "/patients");
+    const showArchived = $("#showArchived")?.checked;
+    const patients = await api("GET", "/patients" + (showArchived ? "?include_archived=1" : ""));
     state.patients = patients;
     const list = $("#patientsList");
     list.innerHTML = "";
@@ -151,10 +152,14 @@ async function loadPatients() {
     for (const p of patients) {
       const item = document.createElement("div");
       item.className = "card";
+      if (p.archived) item.classList.add("is-archived");
       item.innerHTML = `
         <div class="card-head">
           <strong>${esc(p.name)}</strong>
-          <span class="badge badge-medium">${esc(p.membership_level || "—")}</span>
+          <span class="row">
+            ${p.archived ? `<span class="badge badge-low">archived</span>` : ""}
+            <span class="badge badge-medium">${esc(p.membership_level || "—")}</span>
+          </span>
         </div>
         <dl class="kv">
           <dt>Phase</dt><dd>${esc(p.treatment_phase || "—")}</dd>
@@ -162,7 +167,13 @@ async function loadPatients() {
           <dt>Insurance</dt><dd>${esc(p.insurance_info || "—")}</dd>
           <dt>Goals</dt><dd>${esc(p.goals || "—")}</dd>
         </dl>
-        <span class="detail-link" data-patient="${p.id}">details →</span>`;
+        <div class="card-actions">
+          <button class="btn btn-sm" data-edit="${p.id}">Edit</button>
+          ${p.archived
+            ? `<button class="btn btn-sm" data-unarchive="${p.id}">Restore</button>`
+            : `<button class="btn btn-sm btn-danger" data-archive="${p.id}">Archive</button>`}
+          <span class="detail-link" data-patient="${p.id}">details →</span>
+        </div>`;
       item.querySelector(".detail-link").addEventListener("click", () => openPatient(p.id));
       list.appendChild(item);
     }
@@ -751,17 +762,115 @@ async function loadPrescribing() {
   }
 }
 
-// ---- Archive button on patient detail ----
+// ---- Archive / restore ----
+// Archive rather than delete: call_log rows cascade on delete, so a hard delete
+// would destroy contact history. Archived patients drop out of the active lists
+// and the status board, and can be restored at any time.
 async function archivePatient(id) {
-  if (!confirm("Archive this patient? They will be hidden from active lists but can be restored.")) return;
+  const p = state.patients.find((x) => x.id === id);
+  if (!confirm(`Archive ${p ? p.name : "this patient"}?\n\nThey are hidden from the patient list, the status board and the exception monitor, but nothing is deleted and you can restore them from "Show archived".`)) return;
   try {
     await api("PATCH", `/patients/${id}/archive`);
     toast("Patient archived.");
-    loadPatients();
+    await loadPatients();
+    loadDashboard();
   } catch (e) {
     toast("Error: " + e.message);
   }
 }
+
+async function unarchivePatient(id) {
+  try {
+    await api("PATCH", `/patients/${id}/unarchive`);
+    toast("Patient restored.");
+    await loadPatients();
+    loadDashboard();
+  } catch (e) {
+    toast("Error: " + e.message);
+  }
+}
+
+// ---- Edit patient ----
+const EDIT_FIELDS = [
+  ["epName", "name"],
+  ["epDob", "date_of_birth"],
+  ["epEmail", "email"],
+  ["epPhone", "phone"],
+  ["epAddress", "address"],
+  ["epInsurance", "insurance_info"],
+  ["epMembership", "membership_level"],
+  ["epPhase", "treatment_phase"],
+  ["epInterval", "expected_contact_interval_days"],
+  ["epGoals", "goals"],
+];
+let editingPatientId = null;
+
+// Existing records hold values the picker doesn't offer (e.g. membership
+// "intensive", phase "recovery"). Setting an unknown value on a <select> is a
+// silent no-op that leaves it blank — and saving would then wipe the field — so
+// carry the current value in as an option instead.
+function setSelectValue(el, value) {
+  const v = value ?? "";
+  if (v && ![...el.options].some((o) => o.value === v)) {
+    el.add(new Option(v + " (current)", v), 1);
+  }
+  el.value = v;
+}
+
+async function openEditPatient(id) {
+  try {
+    // Read the full row, not the status projection, so no field round-trips blank.
+    const p = await api("GET", `/patients/${id}`);
+    editingPatientId = id;
+    $("#epMsg").textContent = "";
+    for (const [el, key] of EDIT_FIELDS) {
+      const node = $("#" + el);
+      if (node.tagName === "SELECT") setSelectValue(node, p[key]);
+      else node.value = p[key] ?? "";
+    }
+    $("#editPatientModal").showModal();
+  } catch (e) {
+    toast("Error: " + e.message);
+  }
+}
+
+$("#btnUpdatePatient").addEventListener("click", async () => {
+  const name = $("#epName").value.trim();
+  if (!name) { $("#epMsg").textContent = "Name is required."; return; }
+  const body = {
+    name,
+    date_of_birth: $("#epDob").value || null,
+    email: $("#epEmail").value.trim() || null,
+    phone: $("#epPhone").value.trim() || null,
+    address: $("#epAddress").value.trim() || null,
+    insurance_info: $("#epInsurance").value.trim() || null,
+    membership_level: $("#epMembership").value || null,
+    treatment_phase: $("#epPhase").value || null,
+    expected_contact_interval_days: Number($("#epInterval").value) || 30,
+    goals: $("#epGoals").value.trim() || null,
+  };
+  try {
+    await api("PATCH", `/patients/${editingPatientId}`, body);
+    $("#editPatientModal").close();
+    toast("Patient updated.");
+    await loadPatients();
+    loadDashboard();
+  } catch (e) {
+    $("#epMsg").textContent = "Error: " + e.message;
+  }
+});
+
+// Delegated actions on the patient cards
+$("#patientsList").addEventListener("click", (e) => {
+  const edit = e.target.closest("[data-edit]");
+  if (edit) return openEditPatient(Number(edit.dataset.edit));
+  const arch = e.target.closest("[data-archive]");
+  if (arch) return archivePatient(Number(arch.dataset.archive));
+  const un = e.target.closest("[data-unarchive]");
+  if (un) return unarchivePatient(Number(un.dataset.unarchive));
+});
+
+$("#showArchived").addEventListener("change", loadPatients);
 
 // Hook up tab switching for new tabs
 document.querySelectorAll(".tab").forEach((tab) => {

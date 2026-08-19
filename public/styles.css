@@ -105,6 +105,14 @@ body { font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Seg
 .exception-item.medium { border-left-color: var(--warn); }
 .exception-item.low { border-left-color: var(--muted); }
 
+.card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.card-actions .detail-link { margin-left: auto; }
+.btn-danger { color: var(--danger); border-color: var(--border); }
+.btn-danger:hover { background: #fdecea; border-color: var(--danger); }
+.toggle-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.toggle-inline input { width: 16px; height: 16px; accent-color: var(--orange); cursor: pointer; }
+.card.is-archived { opacity: .72; background: #fbfbfb; }
+
 .detail-link { color: var(--text); cursor: pointer; text-decoration: none; float: right; font-size: 13px; font-weight: 600; }
 
 .modal { border: none; border-radius: 12px; padding: 0; width: min(640px, 92vw); max-height: 85vh; overflow: auto; box-shadow: 0 10px 40px rgba(0,0,0,.3); }
@@ -152,6 +160,9 @@ textarea:focus, select:focus, .field-input:focus { outline: none; border-color: 
   .brand-name { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tagline { display: none; }
   .topbar-right { flex: none; gap: 2px; }
+  /* Out of the absolute-centred layer: at 428-430 the centred tag overlapped
+     the right-anchored connection pill once its label read "connected". */
+  .version-tag { position: static; transform: none; flex: none; }
 
   /* Connection pill: dot + accessible-only label on the narrowest phones */
   .conn { padding: 6px 10px; font-size: 11px; }
@@ -215,6 +226,11 @@ textarea:focus, select:focus, .field-input:focus { outline: none; border-color: 
     border-top: 1px solid var(--border);
     padding-top: 4px;
   }
+  .card-actions { gap: 10px; }
+  .card-actions .btn { min-height: 44px; }
+  .card-actions .detail-link { border-top: none; margin-top: 0; padding-top: 0; }
+  .toggle-inline { min-height: 44px; }
+  .toggle-inline input { width: 20px; height: 20px; }
   .card-head .detail-link { border-top: none; min-height: 44px; margin-top: 0; padding-top: 0; padding-left: 12px; }
 
   /* ---- Touch targets: 44px minimum ---- */
