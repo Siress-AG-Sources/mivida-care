@@ -655,6 +655,7 @@ export async function runExceptionMonitor(env: Env) {
   // Configurable thresholds from settings (defaults from the note)
   const contactDays = Number(await getSetting(db, "contact_interval_days", "30"));
   const exhaustionLead = Number(await getSetting(db, "exhaustion_lead_days", "14"));
+  const orderLead = Number(await getSetting(db, "order_lead_days", "7"));
   const followupLead = Number(await getSetting(db, "followup_overdue_days", "7"));
   const taskLead = Number(await getSetting(db, "task_overdue_days", "3"));
 
@@ -690,10 +691,33 @@ export async function runExceptionMonitor(env: Env) {
       if (!exDateRaw) continue;
       const exDate = exDateRaw.slice(0, 10);
       const daysLeft = Math.floor((new Date(exDate).getTime() - Date.now()) / 86400000);
+      const stopped = (m as any).status === "discontinued";
+
+      // 2a. Time to place the order. order_by_date lands before the supply
+      // actually runs out, so this is the reminder that a new prescription is
+      // due — and it takes precedence over the running-out row below, which
+      // would otherwise say nearly the same thing about the same drug.
+      const orderByRaw = (m as any).order_by_date;
+      const orderBy = orderByRaw ? String(orderByRaw).slice(0, 10) : null;
+      const daysToOrder = orderBy
+        ? Math.floor((new Date(orderBy).getTime() - Date.now()) / 86400000)
+        : null;
+      const orderDueOpen = !stopped && daysToOrder !== null && daysToOrder <= orderLead;
+      if (orderDueOpen) {
+        await pushIfNew(db, created, seen, {
+          patient_id: p.id,
+          exception_type: "refill_order_due",
+          severity: daysToOrder <= 0 ? "high" : "medium",
+          details: `${m.name} due to order by ${orderBy}${daysToOrder <= 0 ? " (overdue)" : ` (${daysToOrder} days)`}`,
+        }, `%${m.name}%`);
+      } else {
+        await resolveOpen(db, p.id, "refill_order_due", `%${m.name}%`);
+      }
+
       // A discontinued prescription still sits inside its exhaustion window, so
       // it must be treated as "not running out" — falling through to the else
       // branch is what resolves any exception already raised for it.
-      if (daysLeft <= exhaustionLead && (m as any).status !== "discontinued") {
+      if (daysLeft <= exhaustionLead && !stopped && !orderDueOpen) {
         await pushIfNew(db, created, seen, { patient_id: p.id, exception_type: "medication_running_out", severity: daysLeft <= 7 ? "high" : "medium", details: `${m.name} exhausts ${exDate} (${daysLeft} days)` }, `%${m.name}%`);
       } else {
         // No longer running out — clear stale exception for this med
@@ -715,7 +739,7 @@ export async function runExceptionMonitor(env: Env) {
     // details starting with the medication name, so anything that no longer
     // matches a medication on file is stale.
     const liveNames = meds.map((m) => m.name);
-    for (const type of ["medication_running_out", "prompt_uncompleted"]) {
+    for (const type of ["medication_running_out", "prompt_uncompleted", "refill_order_due"]) {
       const { results: stale } = await db.prepare(
         `SELECT id, details FROM exceptions
          WHERE patient_id = ? AND exception_type = ? AND resolved_date IS NULL`
@@ -816,6 +840,43 @@ app.get("/exceptions", async (c) => {
 // Status board — "always be able to tell us"
 // ---------------------------------------------------------------------------
 
+// A patient with nothing on file should read as new, not as broken output. Only
+// the facts that exist get a clause; the rest are left out rather than filled
+// with placeholder dashes.
+function buildStatusText(d: {
+  activeMeds: any[];
+  currentCycle: any;
+  daysOnHand: number | null;
+  nextOrderBy: string | null;
+  lastEncounter: any;
+}): string {
+  const parts: string[] = [];
+
+  if (d.activeMeds.length) {
+    const names = d.activeMeds.map((m) => m.name);
+    const list = names.length > 1
+      ? names.slice(0, -1).join(", ") + " and " + names[names.length - 1]
+      : names[0];
+    let meds = `Taking ${list}`;
+    if (d.daysOnHand != null) meds += ` — about ${d.daysOnHand} ${d.daysOnHand === 1 ? "day" : "days"} on hand`;
+    if (d.nextOrderBy) meds += `, order by ${String(d.nextOrderBy).slice(0, 10)}`;
+    parts.push(meds + ".");
+  } else {
+    parts.push("No prescriptions on file.");
+  }
+
+  if (d.currentCycle) {
+    const label = d.currentCycle.cycle_type || "Current cycle";
+    parts.push(d.currentCycle.end_date ? `${label} through ${String(d.currentCycle.end_date).slice(0, 10)}.` : `${label} in progress.`);
+  }
+
+  parts.push(d.lastEncounter?.occurred_at
+    ? `Last contact ${String(d.lastEncounter.occurred_at).slice(0, 10)}.`
+    : "No contact recorded yet.");
+
+  return parts.join(" ");
+}
+
 app.get("/patients/:id/status", async (c) => {
   const id = Number(c.req.param("id"));
   const patient = (await c.env.DB.prepare("SELECT * FROM patients WHERE id = ?")
@@ -876,7 +937,7 @@ app.get("/patients/:id/status", async (c) => {
     open_refill_prompts: openPrompts,
     open_tasks: openTasks,
     unresolved_exceptions: unresolvedExceptions,
-    status_text: `Taking ${activeMeds.map((m) => m.name).join(", ") || "nothing on file"}; cycle ${currentCycle?.cycle_type || "—"} ends ${currentCycle?.end_date?.slice(0, 10) || "—"}; ~${daysOnHand ?? "?"} days of meds on hand; next order by ${nextOrderBy || "—"}; last contact ${lastEncounter?.occurred_at?.slice(0, 10) || "never"}.`,
+    status_text: buildStatusText({ activeMeds, currentCycle, daysOnHand, nextOrderBy, lastEncounter }),
   });
 });
 
@@ -925,7 +986,8 @@ async function audit(
 // SQLite datetime format ("YYYY-MM-DD HH:MM:SS"). The exception monitor and the
 // 90-day list compare against datetime('now', ...), so anything stored in ISO
 // "T"/"Z" form would compare wrong. Accepts a datetime-local value too.
-const CALL_ACTIONS = new Set(["no_change", "refill_needed", "dose_changed", "discontinued"]);
+const CALL_ACTIONS = new Set(["no_change", "started", "refill_needed", "dose_changed", "discontinued"]);
+const CALL_COLUMNS = new Set(["called_at", "direction", "notes", "duration_minutes"]);
 
 function sqlDateTime(input?: string): string {
   const d = input ? new Date(input) : new Date();
@@ -989,12 +1051,48 @@ app.post("/patients/:id/calls", async (c) => {
   // monitor's no_contact check and the 90-day unseen list both clear. Without
   // this the doctor logs a call and the patient still reads as un-contacted.
   await c.env.DB.prepare(
-    `INSERT INTO encounters (patient_id, occurred_at, q2_what_happened, source)
-     VALUES (?, ?, ?, 'call')`
-  ).bind(pid, calledAt, body.notes || "Call logged (no notes)").run();
+    `INSERT INTO encounters (patient_id, occurred_at, q2_what_happened, source, call_id)
+     VALUES (?, ?, ?, 'call', ?)`
+  ).bind(pid, calledAt, body.notes || "Call logged (no notes)", callId).run();
 
   await audit(c, "system", "call.create", "call_log", callId, null, { ...body, linked_medication_ids: linked });
   return c.json({ id: callId, medication_ids: linked }, 201);
+});
+
+// A call is often written up after the fact, so every field must be
+// correctable — the date and time especially. Editing the time also moves the
+// encounter this call created, or the contact clock would keep the wrong date.
+app.patch("/calls/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json();
+  const current = (await c.env.DB.prepare("SELECT * FROM call_log WHERE id = ?").bind(id).first()) as any;
+  if (!current) return c.json({ error: "not found" }, 404);
+
+  const patch: Record<string, unknown> = {};
+  for (const f of Object.keys(body)) {
+    if (!CALL_COLUMNS.has(f)) continue;
+    patch[f] = f === "called_at" ? sqlDateTime(body[f]) : body[f];
+  }
+  const fields = Object.keys(patch);
+  if (!fields.length) return c.json({ error: "no updatable fields" }, 400);
+
+  await c.env.DB.prepare(
+    `UPDATE call_log SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`
+  ).bind(...fields.map((f) => patch[f]), id).run();
+
+  if (patch.called_at || patch.notes !== undefined) {
+    await c.env.DB.prepare(
+      `UPDATE encounters SET occurred_at = ?, q2_what_happened = ? WHERE call_id = ?`
+    ).bind(
+      patch.called_at ?? current.called_at,
+      (patch.notes ?? current.notes) || "Call logged (no notes)",
+      id
+    ).run();
+  }
+
+  await audit(c, "system", "call.update", "call_log", id, current, patch);
+  const updated = await c.env.DB.prepare("SELECT * FROM call_log WHERE id = ?").bind(id).first();
+  return c.json(updated);
 });
 
 app.get("/patients/:id/calls", async (c) => {

@@ -6,7 +6,7 @@
   <title>Mi Vida Health — Care Platform</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/styles.css?v=23" />
+  <link rel="stylesheet" href="/styles.css?v=24" />
 </head>
 <body>
   <header class="topbar">
@@ -18,7 +18,7 @@
       </div>
     </div>
 
-    <span class="version-tag" title="v23">v23</span>
+    <span class="version-tag" title="v24">v24</span>
 
     <div class="topbar-right">
       <span id="connStatus" class="conn conn-off" role="status" aria-live="polite">
@@ -294,6 +294,30 @@
       </div>
     </dialog>
 
+    <!-- EDIT CALL MODAL -->
+    <dialog id="callEditModal" class="modal">
+      <div class="modal-body">
+        <div class="modal-head">
+          <h2 class="section-title">Edit call</h2>
+          <button class="btn btn-ghost" onclick="document.getElementById('callEditModal').close()">✕</button>
+        </div>
+        <p class="muted small">Correct the time if the call was written up later.</p>
+        <label class="field"><span>When the call actually happened</span><input id="ceWhen" type="datetime-local" /></label>
+        <label class="field"><span>Direction</span>
+          <select id="ceDirection" class="field-input">
+            <option value="outbound">Outbound — we called</option>
+            <option value="inbound">Inbound — patient called</option>
+          </select>
+        </label>
+        <label class="field"><span>Duration (minutes)</span><input id="ceDuration" type="number" min="0" /></label>
+        <label class="field"><span>Call notes</span><textarea id="ceNotes" rows="4"></textarea></label>
+        <div class="row-end">
+          <button id="btnSaveCallEdit" class="btn btn-primary">Save changes</button>
+        </div>
+        <p id="ceMsg" class="muted small"></p>
+      </div>
+    </dialog>
+
     <!-- PRESCRIPTION HISTORY MODAL -->
     <dialog id="rxHistoryModal" class="modal">
       <div class="modal-body">
@@ -370,6 +394,6 @@
   <footer class="footer-note">
     Mi Vida Health · concierge medicine · info@mivida.health · mivida.health
   </footer>
-  <script src="/app.js?v=23"></script>
+  <script src="/app.js?v=24"></script>
 </body>
 </html>

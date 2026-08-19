@@ -112,7 +112,8 @@ document.querySelectorAll(".tab").forEach((tab) => {
 const RULE_ACTIONS = {
   no_contact: { label: "Log call", title: "No contact", kind: "call" },
   followup_overdue: { label: "Log call", title: "Follow-up overdue", kind: "call" },
-  medication_running_out: { label: "Generate refill", title: "Medication running out", kind: "refill" },
+  refill_order_due: { label: "Generate refill", title: "Order due", kind: "refill" },
+  medication_running_out: { label: "Generate refill", title: "Supply running out", kind: "refill" },
   prompt_uncompleted: { label: "Mark ordered", title: "Refill not ordered", kind: "prompt" },
   receipt_unconfirmed: { label: "Confirm receipt", title: "Delivery unconfirmed", kind: "receipt" },
   task_incomplete: { label: "Open tasks", title: "Open team tasks", kind: "open" },
@@ -368,10 +369,33 @@ async function openPatient(id) {
 
 const RX_ACTION_LABEL = {
   no_change: "no change",
+  started: "started",
   refill_needed: "refill needed",
   dose_changed: "dose changed",
   discontinued: "discontinued",
 };
+
+// Insert a prescription into the open call form without touching anything else.
+function addRxToCallForm(m) {
+  const list = $("#clRxList");
+  if (!list) return;
+  $("#clNoRx")?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = "rx-capture";
+  wrap.innerHTML = `
+    <label class="rx-option">
+      <input type="checkbox" class="cl-med" value="${m.id}" checked />
+      <span><strong>${esc(m.name)}</strong>${m.dose ? " " + esc(m.dose) : ""}</span>
+    </label>
+    <select class="field-input cl-med-action" data-for="${m.id}">
+      <option value="started" selected>Started on this call</option>
+      <option value="no_change">Discussed — no change</option>
+      <option value="refill_needed">Refill needed</option>
+      <option value="dose_changed">Dose changed</option>
+      <option value="discontinued">Discontinued</option>
+    </select>`;
+  list.appendChild(wrap);
+}
 
 // ---- Prescription tracking ----
 async function openMedHistory(medId, medName) {
@@ -411,8 +435,8 @@ const MED_FIELDS = [
 ];
 let medContext = { patientId: null, medId: null };
 
-async function openMedForm(patientId, medId) {
-  medContext = { patientId, medId };
+async function openMedForm(patientId, medId, opts) {
+  medContext = { patientId, medId, fromCall: !!(opts && opts.fromCall) };
   $("#mdMsg").textContent = "";
   $("#medModalTitle").textContent = medId ? "Edit prescription" : "Add prescription";
   let m = {};
@@ -440,11 +464,21 @@ $("#btnSaveMed").addEventListener("click", async () => {
     delivery_notes: $("#mdNotes").value.trim() || null,
   };
   try {
+    let newId = medContext.medId;
     if (medContext.medId) await api("PATCH", "/medications/" + medContext.medId, body);
-    else await api("POST", `/patients/${medContext.patientId}/medications`, body);
+    else newId = (await api("POST", `/patients/${medContext.patientId}/medications`, body)).id;
     await api("POST", "/exceptions/run");
     $("#medModal").close();
     toast(medContext.medId ? "Prescription updated." : "Prescription added.");
+
+    if (medContext.fromCall) {
+      // Re-rendering the patient view here would wipe the call notes the doctor
+      // is part-way through writing, so splice the new prescription into the
+      // picker instead — ticked, and marked as started on this call.
+      addRxToCallForm({ id: newId, name: body.name, dose: body.dose });
+      loadDashboard();
+      return;
+    }
     await openPatient(medContext.patientId);
     loadDashboard();
   } catch (e) {
@@ -456,7 +490,7 @@ $("#btnSaveMed").addEventListener("click", async () => {
 function callFormHtml(patientId, meds) {
   return `
   <div id="callForm" class="call-form hidden" data-patient="${patientId}">
-    <label class="field"><span>When</span><input id="clWhen" type="datetime-local" /></label>
+    <label class="field"><span>When the call actually happened</span><input id="clWhen" type="datetime-local" /></label>
     <label class="field"><span>Direction</span>
       <select id="clDirection" class="field-input">
         <option value="outbound">Outbound — we called</option>
@@ -467,6 +501,7 @@ function callFormHtml(patientId, meds) {
     <label class="field"><span>Call notes</span><textarea id="clNotes" rows="4" placeholder="What was discussed, decisions made, what happens next."></textarea></label>
     <fieldset class="rx-picker">
       <legend>Prescriptions discussed</legend>
+      <div id="clRxList">
       ${meds.length
         ? meds.map((m) => `
           <div class="rx-capture">
@@ -481,7 +516,9 @@ function callFormHtml(patientId, meds) {
               <option value="discontinued">Discontinued</option>
             </select>
           </div>`).join("")
-        : `<p class="muted small">No prescriptions on file for this patient.</p>`}
+        : `<p class="muted small" id="clNoRx">No prescriptions on file for this patient.</p>`}
+      </div>
+      <button type="button" class="btn btn-sm" id="btnAddMedInCall" data-pid="${patientId}">+ Add a prescription started on this call</button>
     </fieldset>
     <div class="row-end">
       <button id="btnSaveCall" class="btn btn-primary">Save call</button>
@@ -507,6 +544,7 @@ async function loadCalls(patientId) {
           ${c.duration_minutes ? `<span class="muted small">${esc(c.duration_minutes)} min</span>` : ""}
         </div>
         ${c.notes ? `<p class="small" style="margin-top:6px">${esc(c.notes)}</p>` : `<p class="muted small" style="margin-top:6px">No notes.</p>`}
+        <button class="btn btn-sm" data-calledit="${c.id}">Edit call</button>
         ${(c.medications || []).length
           ? `<div class="row" style="margin-top:8px">${c.medications.map((m) =>
               `<span class="badge ${m.action && m.action !== "no_change" ? "badge-medium" : "badge-low"}">℞ ${esc(m.name)}${
@@ -518,6 +556,45 @@ async function loadCalls(patientId) {
     box.innerHTML = `<div class="muted small">${esc(e.message)}</div>`;
   }
 }
+
+let editingCall = null;
+
+// Calls are usually written up after the fact, so the recorded time is often
+// wrong. Editing it moves the paired encounter too (handled server-side), so
+// the contact clock cannot drift away from the call log.
+async function openCallEdit(callId, patientId) {
+  const calls = await api("GET", `/patients/${patientId}/calls`);
+  const c = calls.find((x) => x.id === callId);
+  if (!c) return;
+  editingCall = { id: callId, patientId };
+  const local = new Date(String(c.called_at).replace(" ", "T") + "Z");
+  local.setMinutes(local.getMinutes() - local.getTimezoneOffset());
+  $("#ceWhen").value = local.toISOString().slice(0, 16);
+  $("#ceDirection").value = c.direction || "outbound";
+  $("#ceDuration").value = c.duration_minutes ?? "";
+  $("#ceNotes").value = c.notes || "";
+  $("#ceMsg").textContent = "";
+  $("#callEditModal").showModal();
+}
+
+$("#btnSaveCallEdit").addEventListener("click", async () => {
+  if (!editingCall) return;
+  try {
+    await api("PATCH", "/calls/" + editingCall.id, {
+      called_at: $("#ceWhen").value ? new Date($("#ceWhen").value).toISOString() : undefined,
+      direction: $("#ceDirection").value,
+      duration_minutes: Number($("#ceDuration").value) || null,
+      notes: $("#ceNotes").value.trim() || null,
+    });
+    await api("POST", "/exceptions/run");
+    $("#callEditModal").close();
+    toast("Call updated.");
+    await openPatient(editingCall.patientId);
+    loadDashboard();
+  } catch (e) {
+    $("#ceMsg").textContent = "Error: " + e.message;
+  }
+});
 
 // Delegated: the form markup is rebuilt every time the modal opens.
 $("#patientModal").addEventListener("click", async (e) => {
@@ -590,6 +667,15 @@ $("#patientModal").addEventListener("click", async (e) => {
     }
     return;
   }
+
+  const callEdit = e.target.closest("[data-calledit]");
+  if (callEdit) {
+    const pid = Number($("#callForm")?.dataset.patient);
+    return openCallEdit(Number(callEdit.dataset.calledit), pid);
+  }
+
+  const addInCall = e.target.closest("#btnAddMedInCall");
+  if (addInCall) return openMedForm(Number(addInCall.dataset.pid), null, { fromCall: true });
 
   const medTick = e.target.closest(".cl-med");
   if (medTick) {
