@@ -360,6 +360,9 @@ app.get("/patients/:id/encounters", async (c) => {
 // Tasks
 // ---------------------------------------------------------------------------
 
+// Mirrors the tasks table in migrations/0001 — there is no completed_at column.
+const TASK_COLUMNS = new Set(["description", "owner", "due_date", "status"]);
+
 app.get("/tasks", async (c) => {
   const { results } = await c.env.DB.prepare(
     "SELECT t.*, p.name AS patient_name FROM tasks t JOIN patients p ON p.id = t.patient_id ORDER BY t.due_date ASC"
@@ -370,8 +373,9 @@ app.get("/tasks", async (c) => {
 app.patch("/tasks/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json();
-  const fields = Object.keys(body);
-  if (fields.length === 0) return c.json({ error: "no fields" }, 400);
+  // Column names cannot be bound as parameters — allowlist them.
+  const fields = Object.keys(body).filter((f) => TASK_COLUMNS.has(f));
+  if (fields.length === 0) return c.json({ error: "no updatable fields" }, 400);
   const assignments = fields.map((f) => `${f} = ?`).join(", ");
   const values = fields.map((f) => body[f]);
   await c.env.DB.prepare(`UPDATE tasks SET ${assignments} WHERE id = ?`)

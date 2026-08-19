@@ -105,6 +105,18 @@ body { font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Seg
 .exception-item.medium { border-left-color: var(--warn); }
 .exception-item.low { border-left-color: var(--muted); }
 
+/* ---- Status board: one row per rule that fired, each with its action ---- */
+.attn-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.attn-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.attn-text { flex: 1 1 180px; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.attn-btn { flex: none; white-space: nowrap; }
+.board-summary { margin-top: 2px; }
+.board-ok { color: var(--good); margin-top: 10px; font-weight: 600; }
+.card.board-clear { border-left: 3px solid var(--good); }
+
+.task-row { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; cursor: pointer; }
+.task-row input { width: 18px; height: 18px; accent-color: var(--good); flex: none; margin-top: 2px; cursor: pointer; }
+
 /* ---- Call log ---- */
 .call-form { border: 1px solid var(--border); border-radius: var(--radius); background: var(--mint-light); padding: 14px; margin-top: 12px; }
 .call-form.hidden { display: none; }
@@ -236,6 +248,12 @@ textarea:focus, select:focus, .field-input:focus { outline: none; border-color: 
     border-top: 1px solid var(--border);
     padding-top: 4px;
   }
+  /* Stack each attention row so the action button keeps a full-width target */
+  .attn-row { gap: 8px; }
+  .attn-text { flex: 1 1 100%; }
+  .attn-btn { width: 100%; min-height: 44px; }
+  .task-row { min-height: 44px; align-items: center; }
+  .task-row input { width: 22px; height: 22px; margin-top: 0; }
   .call-form { padding: 12px; }
   .rx-option { min-height: 44px; padding: 4px 0; }
   .rx-option input { width: 22px; height: 22px; }

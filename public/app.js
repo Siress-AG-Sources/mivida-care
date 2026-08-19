@@ -105,45 +105,151 @@ document.querySelectorAll(".tab").forEach((tab) => {
 });
 
 // ---- Dashboard ----
+// ---- Status board rules → actions -----------------------------------------
+// Every rule the exception monitor can raise, and the one thing the doctor
+// does about it. "inline" actions fire in place; "open" actions need the
+// patient's full context, so they open the detail view.
+const RULE_ACTIONS = {
+  no_contact: { label: "Log call", title: "No contact", kind: "call" },
+  followup_overdue: { label: "Log call", title: "Follow-up overdue", kind: "call" },
+  medication_running_out: { label: "Generate refill", title: "Medication running out", kind: "refill" },
+  prompt_uncompleted: { label: "Mark ordered", title: "Refill not ordered", kind: "prompt" },
+  receipt_unconfirmed: { label: "Confirm receipt", title: "Delivery unconfirmed", kind: "receipt" },
+  task_incomplete: { label: "Open tasks", title: "Open team tasks", kind: "open" },
+  cycle_ending_unreassessed: { label: "Reassess", title: "Cycle ending", kind: "open" },
+};
+
+// The monitor writes details as "<med name> exhausts ..." / "<med name> has an
+// uncompleted refill prompt", so the record it refers to is matched by name.
+function medFromDetails(st, details) {
+  return (st.medications || []).find((m) => String(details || "").startsWith(m.name)) || null;
+}
+function promptFromDetails(st, details) {
+  return (st.open_refill_prompts || []).find((r) => String(details || "").startsWith(r.med_name)) || null;
+}
+
+function actionTarget(st, ex, prompts) {
+  const rule = RULE_ACTIONS[ex.exception_type];
+  if (!rule) return null;
+  if (rule.kind === "refill") {
+    const m = medFromDetails(st, ex.details);
+    if (!m) return { ...rule, kind: "open", label: "Open" };
+    // Look at prompts in ANY state, not just open ones. Generating a second
+    // prompt for a medication that already has one is duplicate work — and
+    // after one is marked ordered the medication still reads as running out
+    // until its dates are updated, which would otherwise re-offer "Generate".
+    const forMed = (prompts || []).filter((r) => r.patient_id === st.patient.id && r.med_name === m.name);
+    const open = forMed.find((r) => r.status !== "completed");
+    if (open) return { ...rule, kind: "prompt", label: "Mark ordered", promptId: open.id };
+    if (forMed.length) return { ...rule, kind: "open", label: "Ordered — open" };
+    return { ...rule, medId: m.id };
+  }
+  if (rule.kind === "prompt") {
+    const r = promptFromDetails(st, ex.details);
+    return r ? { ...rule, promptId: r.id } : { ...rule, kind: "open", label: "Open" };
+  }
+  if (rule.kind === "receipt") {
+    const m = (st.medications || []).find((x) => x.in_transit && !x.confirmed_at);
+    return m ? { ...rule, medId: m.id } : { ...rule, kind: "open", label: "Open" };
+  }
+  return rule;
+}
+
 async function loadDashboard() {
   try {
-    const [patients, exceptions] = await Promise.all([
+    const [patients, exceptions, prompts] = await Promise.all([
       api("GET", "/patients"),
       api("GET", "/exceptions?unresolved=true"),
+      api("GET", "/refill-prompts"),
     ]);
     state.patients = patients;
     $("#statPatients").textContent = patients.length;
-    const uniq = new Set(exceptions.map((e) => e.patient_id));
     $("#statExceptions").textContent = exceptions.length;
-    $("#statRefills").textContent = "—";
 
     const board = $("#statusBoard");
     board.innerHTML = "";
     if (patients.length === 0) {
-      board.innerHTML = `<div class="card muted">No patients yet.</div>`;
+      board.innerHTML = `<div class="card muted">No patients yet. Add one from the Patients tab.</div>`;
+      $("#statRefills").textContent = "0";
       return;
     }
-    for (const p of patients) {
-      const st = await api("GET", `/patients/${p.id}/status`);
+
+    let openRefills = 0;
+    const statuses = [];
+    for (const p of patients) statuses.push(await api("GET", `/patients/${p.id}/status`));
+
+    for (const st of statuses) {
+      openRefills += (st.open_refill_prompts || []).length;
+      const exs = st.unresolved_exceptions || [];
       const card = document.createElement("div");
-      card.className = "card";
+      card.className = "card" + (exs.length ? "" : " board-clear");
       card.innerHTML = `
         <div class="card-head">
           <strong>${esc(st.patient.name)}</strong>
-          <span class="detail-link" data-patient="${p.id}">details →</span>
+          <span class="detail-link" data-patient="${st.patient.id}">details →</span>
         </div>
-        <p>${esc(st.status_text)}</p>
-        <div class="row" style="margin-top:8px">
-          ${(st.unresolved_exceptions || []).map((e) =>
-            `<span class="badge badge-${esc(e.severity)}">${esc(e.exception_type)}</span>`).join("")}
-        </div>`;
-      card.querySelector(".detail-link").addEventListener("click", () => openPatient(p.id));
+        <p class="muted small board-summary">${esc(st.status_text)}</p>
+        ${exs.length ? `
+          <div class="attn-list">
+            ${exs.map((ex) => {
+              const a = actionTarget(st, ex, prompts);
+              const attrs = a
+                ? `data-act="${a.kind}" data-pid="${st.patient.id}"` +
+                  (a.medId ? ` data-med="${a.medId}"` : "") +
+                  (a.promptId ? ` data-prompt="${a.promptId}"` : "")
+                : "";
+              return `
+              <div class="attn-row">
+                <span class="badge badge-${esc(ex.severity)}">${esc(a ? a.title : ex.exception_type)}</span>
+                <span class="attn-text small">${esc(ex.details || "")}</span>
+                ${a ? `<button class="btn btn-sm attn-btn" ${attrs}>${esc(a.label)}</button>` : ""}
+              </div>`;
+            }).join("")}
+          </div>`
+        : `<p class="board-ok small">✓ All clear — nothing needs attention.</p>`}`;
+      card.querySelector(".detail-link").addEventListener("click", () => openPatient(st.patient.id));
       board.appendChild(card);
     }
+    $("#statRefills").textContent = openRefills;
   } catch (e) {
     $("#statusBoard").innerHTML = `<div class="card">${esc(e.message)}</div>`;
   }
 }
+
+// Board actions. After anything that changes the underlying data, re-run the
+// monitor so the badge clears immediately — otherwise the row would sit there
+// until the 06:30 cron and the board would look broken.
+$("#statusBoard").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".attn-btn");
+  if (!btn) return;
+  const { act, pid, med, prompt } = btn.dataset;
+  const patientId = Number(pid);
+
+  if (act === "call") { await openPatient(patientId); $("#btnNewCall")?.click(); return; }
+  if (act === "open") { await openPatient(patientId); return; }
+
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Working…";
+  try {
+    if (act === "refill") {
+      await api("POST", "/refill-prompts", { patient_id: patientId, medication_id: Number(med) });
+      toast("Refill prompt generated.");
+    } else if (act === "prompt") {
+      await api("PATCH", "/refill-prompts/" + Number(prompt), { status: "completed" });
+      toast("Refill marked ordered.");
+    } else if (act === "receipt") {
+      await api("PATCH", `/patients/${patientId}/medications/${Number(med)}/confirm`);
+      toast("Receipt confirmed.");
+    }
+    await api("POST", "/exceptions/run");
+    await loadDashboard();
+  } catch (err) {
+    toast("Error: " + err.message);
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+});
 
 // ---- Patients ----
 async function loadPatients() {
@@ -225,7 +331,11 @@ async function openPatient(id) {
     <h3 class="section-title" style="margin-top:16px">Open refill prompts</h3>
     ${(st.open_refill_prompts || []).map((r) => `<div class="small">${esc(r.med_name)} — order by ${esc(fmtDate(r.order_by_date))}</div>`).join("") || `<div class="muted">None.</div>`}
     <h3 class="section-title" style="margin-top:16px">Open tasks</h3>
-    ${(st.open_tasks || []).map((t) => `<div class="small">☐ ${esc(t.description)} (due ${esc(fmtDate(t.due_date))})</div>`).join("") || `<div class="muted">None.</div>`}
+    ${(st.open_tasks || []).map((t) => `
+      <label class="task-row">
+        <input type="checkbox" class="task-done" data-task="${t.id}" data-pid="${st.patient.id}" />
+        <span class="small">${esc(t.description)} <span class="muted">(due ${esc(fmtDate(t.due_date))})</span></span>
+      </label>`).join("") || `<div class="muted">None.</div>`}
 
     <div class="card-head" style="margin-top:20px">
       <h3 class="section-title" style="margin-bottom:0">Call log</h3>
@@ -311,6 +421,23 @@ $("#patientModal").addEventListener("click", async (e) => {
     }
     return;
   }
+  const taskBox = e.target.closest(".task-done");
+  if (taskBox && taskBox.checked) {
+    const { task, pid } = taskBox.dataset;
+    taskBox.disabled = true;
+    try {
+      await api("PATCH", "/tasks/" + Number(task), { status: "done" });
+      await api("POST", "/exceptions/run");
+      toast("Task completed.");
+      await openPatient(Number(pid));
+      loadDashboard();
+    } catch (err) {
+      toast("Error: " + err.message);
+      taskBox.checked = false;
+      taskBox.disabled = false;
+    }
+    return;
+  }
   if (e.target.closest("#btnSaveCall")) {
     const form = $("#callForm");
     const patientId = Number(form.dataset.patient);
@@ -327,8 +454,10 @@ $("#patientModal").addEventListener("click", async (e) => {
         notes,
         medication_ids: [...document.querySelectorAll(".cl-med:checked")].map((el) => Number(el.value)),
       });
+      await api("POST", "/exceptions/run");
       toast("Call logged.");
-      openPatient(patientId);
+      await openPatient(patientId);
+      loadDashboard();
     } catch (err) {
       $("#clMsg").textContent = "Error: " + err.message;
     }
