@@ -1095,6 +1095,26 @@ app.patch("/calls/:id", async (c) => {
   return c.json(updated);
 });
 
+// Removes the call, its prescription links, and the encounter it created —
+// otherwise the deleted call would leave a phantom contact behind and the
+// patient would still read as recently contacted. Any prescription status the
+// call changed is left alone: that was a clinical decision, and reversing it
+// silently because the note was deleted would be worse than leaving it.
+app.delete("/calls/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const call = await c.env.DB.prepare("SELECT * FROM call_log WHERE id = ?").bind(id).first();
+  if (!call) return c.json({ error: "not found" }, 404);
+
+  // Explicit deletes: D1 does not enforce ON DELETE CASCADE unless foreign keys
+  // are switched on for the connection.
+  await c.env.DB.prepare("DELETE FROM call_medications WHERE call_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM encounters WHERE call_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM call_log WHERE id = ?").bind(id).run();
+
+  await audit(c, "system", "call.delete", "call_log", id, call, null);
+  return c.json({ deleted: true });
+});
+
 app.get("/patients/:id/calls", async (c) => {
   const pid = Number(c.req.param("id"));
   const limit = Math.min(Number(c.req.query("limit")) || 50, 200);

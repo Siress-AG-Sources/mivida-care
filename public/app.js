@@ -90,6 +90,22 @@ function medsTxt(meds) {
   return meds.map((m) => `${m.name} (${m.dose || "?"})`).join(", ");
 }
 
+// Saving takes more than one round-trip, and the form stays on screen until the
+// view re-renders. Without disabling the button, a second tap in that window
+// submits the whole thing again — which is how duplicate calls got logged.
+async function withBusy(btn, busyLabel, fn) {
+  if (!btn || btn.disabled) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = busyLabel;
+  try {
+    await fn();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 // ---- Tabs ----
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -452,6 +468,7 @@ async function openMedForm(patientId, medId, opts) {
 $("#btnSaveMed").addEventListener("click", async () => {
   const name = $("#mdName").value.trim();
   if (!name) { $("#mdMsg").textContent = "Medication name is required."; return; }
+  await withBusy($("#btnSaveMed"), "Saving…", async () => {
   const body = {
     name,
     dose: $("#mdDose").value.trim() || null,
@@ -484,6 +501,7 @@ $("#btnSaveMed").addEventListener("click", async () => {
   } catch (e) {
     $("#mdMsg").textContent = "Error: " + e.message;
   }
+  });
 });
 
 // ---- Call log ----
@@ -544,7 +562,10 @@ async function loadCalls(patientId) {
           ${c.duration_minutes ? `<span class="muted small">${esc(c.duration_minutes)} min</span>` : ""}
         </div>
         ${c.notes ? `<p class="small" style="margin-top:6px">${esc(c.notes)}</p>` : `<p class="muted small" style="margin-top:6px">No notes.</p>`}
-        <button class="btn btn-sm" data-calledit="${c.id}">Edit call</button>
+        <div class="card-actions">
+          <button class="btn btn-sm" data-calledit="${c.id}">Edit call</button>
+          <button class="btn btn-sm btn-danger" data-calldel="${c.id}">Delete</button>
+        </div>
         ${(c.medications || []).length
           ? `<div class="row" style="margin-top:8px">${c.medications.map((m) =>
               `<span class="badge ${m.action && m.action !== "no_change" ? "badge-medium" : "badge-low"}">℞ ${esc(m.name)}${
@@ -579,6 +600,7 @@ async function openCallEdit(callId, patientId) {
 
 $("#btnSaveCallEdit").addEventListener("click", async () => {
   if (!editingCall) return;
+  await withBusy($("#btnSaveCallEdit"), "Saving…", async () => {
   try {
     await api("PATCH", "/calls/" + editingCall.id, {
       called_at: $("#ceWhen").value ? new Date($("#ceWhen").value).toISOString() : undefined,
@@ -594,6 +616,7 @@ $("#btnSaveCallEdit").addEventListener("click", async () => {
   } catch (e) {
     $("#ceMsg").textContent = "Error: " + e.message;
   }
+  });
 });
 
 // Delegated: the form markup is rebuilt every time the modal opens.
@@ -668,6 +691,22 @@ $("#patientModal").addEventListener("click", async (e) => {
     return;
   }
 
+  const callDel = e.target.closest("[data-calldel]");
+  if (callDel) {
+    if (!confirm("Delete this call record?\n\nThe note and its prescription links are removed, and it stops counting as contact with the patient. Anything the call changed on a prescription stays as it is.")) return;
+    const pid = Number($("#callForm")?.dataset.patient);
+    await withBusy(callDel, "Deleting…", async () => {
+      try {
+        await api("DELETE", "/calls/" + Number(callDel.dataset.calldel));
+        await api("POST", "/exceptions/run");
+        toast("Call deleted.");
+        await openPatient(pid);
+        loadDashboard();
+      } catch (err) { toast("Error: " + err.message); }
+    });
+    return;
+  }
+
   const callEdit = e.target.closest("[data-calledit]");
   if (callEdit) {
     const pid = Number($("#callForm")?.dataset.patient);
@@ -706,6 +745,7 @@ $("#patientModal").addEventListener("click", async (e) => {
     const patientId = Number(form.dataset.patient);
     const notes = $("#clNotes").value.trim();
     if (!notes) { $("#clMsg").textContent = "Please add a note describing the call."; return; }
+    await withBusy($("#btnSaveCall"), "Saving…", async () => {
     try {
       await api("POST", `/patients/${patientId}/calls`, {
         // Send an explicit UTC instant. A bare datetime-local value ("2026-08-19T10:10")
@@ -727,6 +767,7 @@ $("#patientModal").addEventListener("click", async (e) => {
     } catch (err) {
       $("#clMsg").textContent = "Error: " + err.message;
     }
+    });
   }
 });
 
@@ -961,6 +1002,7 @@ $("#btnAddPatient").addEventListener("click", () => {
 $("#btnSavePatient").addEventListener("click", async () => {
   const name = $("#apName").value.trim();
   if (!name) { $("#apMsg").textContent = "Name is required."; return; }
+  await withBusy($("#btnSavePatient"), "Saving…", async () => {
   try {
     await api("POST", "/patients", {
       name,
@@ -980,6 +1022,7 @@ $("#btnSavePatient").addEventListener("click", async () => {
   } catch (e) {
     $("#apMsg").textContent = "Error: " + e.message;
   }
+  });
 });
 
 // ---- Confirm receipt (delegated click on patient modal) ----
@@ -1345,6 +1388,7 @@ async function openEditPatient(id) {
 $("#btnUpdatePatient").addEventListener("click", async () => {
   const name = $("#epName").value.trim();
   if (!name) { $("#epMsg").textContent = "Name is required."; return; }
+  await withBusy($("#btnUpdatePatient"), "Saving…", async () => {
   const body = {
     name,
     date_of_birth: $("#epDob").value || null,
@@ -1366,6 +1410,7 @@ $("#btnUpdatePatient").addEventListener("click", async () => {
   } catch (e) {
     $("#epMsg").textContent = "Error: " + e.message;
   }
+  });
 });
 
 // Delegated actions on the patient cards
