@@ -92,7 +92,7 @@ app.use("*", async (c, next) => {
     return new Response(null, { status: 204 });
   }
 
-  if (path === "/health") return next();
+  if (path === "/health" || path === "/debug") return next();
   // Admin routes have their own auth gate
   if (path.startsWith("/admin")) return next();
   // Admin routes also accessible via /api prefix
@@ -1107,15 +1107,16 @@ app.get("/deploy-events", async (c) => {
 
 async function staticAssetsHandler(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
-  let path = url.pathname;
-  if (path === "/") path = "/index.html";
+  const path = url.pathname;
 
   // Serve from static assets.
   try {
     const asset = await (env as any).ASSETS.fetch(new Request(new URL(path, url.origin), request));
     if (asset.status === 404 && !path.includes(".")) {
-      // SPA fallback to index
-      return (env as any).ASSETS.fetch(new Request(new URL("/index.html", url.origin), request));
+      // SPA fallback. Request "/" rather than "/index.html": the assets layer's
+      // default auto-trailing-slash html_handling 307-redirects /index.html to
+      // /, which turned every extensionless deep link into a redirect.
+      return (env as any).ASSETS.fetch(new Request(new URL("/", url.origin), request));
     }
     return asset;
   } catch (e) {
@@ -1133,6 +1134,12 @@ export default {
       newUrl.pathname = url.pathname.replace(/^\/api/, "") || "/";
       const apiRequest = new Request(newUrl.toString(), request);
       return app.fetch(apiRequest, env, ctx);
+    }
+    // Operational endpoints are owned by the Worker, not the frontend. Without
+    // this they fall through to staticAssetsHandler and 307 away to "/", so
+    // /health could not be probed and /debug never reached its adminAuth gate.
+    if (url.pathname === "/health" || url.pathname === "/debug") {
+      return app.fetch(request, env, ctx);
     }
     return staticAssetsHandler(request, env, ctx);
   },

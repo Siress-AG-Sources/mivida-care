@@ -1,6 +1,6 @@
 # Mi Vida Health — Project Status
 
-_Last updated: 2026-08-18 (commit a897172)_
+_Last updated: 2026-08-18 (commit e3f567a + operational-route fix)_
 
 ## What this is
 
@@ -22,26 +22,27 @@ it structures what the provider decided and prompts the provider to act.
 - **CI**: `.github/workflows/deploy.yml` — push to main → typecheck → wrangler
   deploy → POST a deploy-event to the live app (drives "What's New" notifications)
 - **Live URL**: https://mivida.siress.workers.dev
+- **Operational routes**: `/health` (open, JSON) and `/debug` (adminAuth, 401
+  without a token) are served by the Worker at both the bare path and the
+  `/api` prefix. Anything else non-`/api` goes to the static asset handler.
 - **Email**: Resend, notification on deploy
 
-## Cache-busting convention (important — easy to get wrong)
+## Cache-busting convention (changed in e3f567a — old notes are obsolete)
 
-Edge caching bit us repeatedly (see commits a3bf16f, 9a47c52). The fix in use:
-**versioned filenames**. `public/index.html` loads `styles-v14.css` and
-`app-v17.js` — **the unsuffixed `public/app.js` and `public/styles.css` are
-NOT what the site serves.** They happen to be byte-identical to the live
-versions right now, but that's coincidence, not a guarantee:
+Edge caching bit us repeatedly (see commits a3bf16f, 9a47c52). Through v17 the
+fix was **versioned filenames** (`app-v17.js`, `styles-v14.css`). That is no
+longer how this works.
 
-- Don't read `app.js`/`styles.css` as the source of truth for current
-  behavior — check what `index.html` references.
-- Editing the unsuffixed files changes nothing in production.
-- **Never delete the `public/app-v*.js` / `styles-v*.css` files as "dead
-  duplicates"** — deleting the referenced ones takes the site down.
+**Current convention: canonical filenames + a query string.** There is exactly
+one `public/app.js` and one `public/styles.css`, and `public/index.html` loads
+them as `/app.js?v=18` and `/styles.css?v=18`.
 
-To ship frontend changes: copy the live `app-vN.js` / `styles-vN.css` to
-`v(N+1)`, edit that, and update the reference in `index.html`.
-(`app-v15.js` at the **repo root** — not `public/` — is a genuinely stray
-copy, byte-identical to `public/app-v15.js`.)
+- `public/app.js` and `public/styles.css` ARE the source of truth. Edit them
+  directly.
+- To ship a frontend change: edit the file, then bump **both** `?v=` numbers in
+  `index.html` in the same commit. Forgetting the bump is the whole bug class.
+- No `app-v*.js` / `styles-v*.css` files should exist any more. If one appears,
+  it is a stray copy — the old "never delete these" warning no longer applies.
 
 ## Who's building what
 
@@ -106,11 +107,6 @@ the new file.
   out whoever holds the rollout-email token, and the matching GitHub Actions
   secret must change in the same pass or CI's notify step 401s silently
   (it uses `curl -s` with no `-f`, so the run stays green).
-- **`GET /api/debug` is publicly reachable** (exempted from auth at
-  `src/index.ts:95`) and leaks env key names + token length. Flagged to Tony;
-  suggested fix is gating it behind `adminAuth` rather than deleting — it's
-  how a candidate token gets verified.
-- Stray `app-v15.js` at repo root (duplicate of `public/app-v15.js`)
 - `UPDATE_EMAIL.txt` at root — draft update email, may be stale
 - DESIGN.md §10 open questions (practice location/law, note entry method,
   patient volume, EHR coexistence) still open
