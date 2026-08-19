@@ -805,15 +805,53 @@ async function audit(
 // Call log (timestamped patient contacts)
 // ---------------------------------------------------------------------------
 
+// SQLite datetime format ("YYYY-MM-DD HH:MM:SS"). The exception monitor and the
+// 90-day list compare against datetime('now', ...), so anything stored in ISO
+// "T"/"Z" form would compare wrong. Accepts a datetime-local value too.
+function sqlDateTime(input?: string): string {
+  const d = input ? new Date(input) : new Date();
+  const t = isNaN(d.getTime()) ? new Date() : d;
+  return t.toISOString().slice(0, 19).replace("T", " ");
+}
+
 app.post("/patients/:id/calls", async (c) => {
   const pid = Number(c.req.param("id"));
   const body = await c.req.json();
+  const calledAt = sqlDateTime(body.called_at);
+
   const result = await c.env.DB.prepare(
     `INSERT INTO call_log (patient_id, called_at, direction, notes, duration_minutes)
      VALUES (?, ?, ?, ?, ?)`
-  ).bind(pid, body.called_at || new Date().toISOString(), body.direction || "outbound", body.notes || null, body.duration_minutes || null).run();
-  await audit(c, "system", "call.create", "call_log", result.meta.last_row_id, null, body);
-  return c.json({ id: result.meta.last_row_id }, 201);
+  ).bind(pid, calledAt, body.direction || "outbound", body.notes || null, body.duration_minutes || null).run();
+  const callId = result.meta.last_row_id;
+
+  // Link the prescriptions discussed on the call. Only this patient's own
+  // medications may be linked — never trust the ids straight off the body.
+  const requested = Array.isArray(body.medication_ids) ? body.medication_ids.map(Number).filter(Boolean) : [];
+  let linked: number[] = [];
+  if (requested.length) {
+    const placeholders = requested.map(() => "?").join(", ");
+    const { results } = await c.env.DB.prepare(
+      `SELECT id FROM medications WHERE patient_id = ? AND id IN (${placeholders})`
+    ).bind(pid, ...requested).all();
+    linked = results.map((r: any) => r.id as number);
+    for (const mid of linked) {
+      await c.env.DB.prepare(
+        "INSERT OR IGNORE INTO call_medications (call_id, medication_id) VALUES (?, ?)"
+      ).bind(callId, mid).run();
+    }
+  }
+
+  // A logged call IS contact: record a matching encounter so the exception
+  // monitor's no_contact check and the 90-day unseen list both clear. Without
+  // this the doctor logs a call and the patient still reads as un-contacted.
+  await c.env.DB.prepare(
+    `INSERT INTO encounters (patient_id, occurred_at, q2_what_happened, source)
+     VALUES (?, ?, ?, 'call')`
+  ).bind(pid, calledAt, body.notes || "Call logged (no notes)").run();
+
+  await audit(c, "system", "call.create", "call_log", callId, null, { ...body, linked_medication_ids: linked });
+  return c.json({ id: callId, medication_ids: linked }, 201);
 });
 
 app.get("/patients/:id/calls", async (c) => {
@@ -822,7 +860,25 @@ app.get("/patients/:id/calls", async (c) => {
   const { results } = await c.env.DB.prepare(
     "SELECT * FROM call_log WHERE patient_id = ? ORDER BY called_at DESC LIMIT ?"
   ).bind(pid, limit).all();
-  return c.json(results);
+
+  // Attach the prescriptions discussed on each call (one query, grouped here).
+  const calls = results as any[];
+  if (calls.length) {
+    const placeholders = calls.map(() => "?").join(", ");
+    const { results: links } = await c.env.DB.prepare(
+      `SELECT cm.call_id, m.id, m.name, m.dose
+       FROM call_medications cm
+       JOIN medications m ON m.id = cm.medication_id
+       WHERE cm.call_id IN (${placeholders})
+       ORDER BY m.name`
+    ).bind(...calls.map((r) => r.id)).all();
+    const byCall: Record<number, any[]> = {};
+    for (const l of links as any[]) {
+      (byCall[l.call_id] ||= []).push({ id: l.id, name: l.name, dose: l.dose });
+    }
+    for (const call of calls) call.medications = byCall[call.id] || [];
+  }
+  return c.json(calls);
 });
 
 // ---------------------------------------------------------------------------

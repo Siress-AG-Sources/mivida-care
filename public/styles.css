@@ -105,6 +105,16 @@ body { font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Seg
 .exception-item.medium { border-left-color: var(--warn); }
 .exception-item.low { border-left-color: var(--muted); }
 
+/* ---- Call log ---- */
+.call-form { border: 1px solid var(--border); border-radius: var(--radius); background: var(--mint-light); padding: 14px; margin-top: 12px; }
+.call-form.hidden { display: none; }
+.rx-picker { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--card); }
+.rx-picker legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.rx-option { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; font-size: 14px; }
+.rx-option input { width: 18px; height: 18px; accent-color: var(--orange); flex: none; cursor: pointer; }
+.call-item { border-left: 3px solid var(--mint); padding: 2px 0 2px 12px; }
+.call-item + .call-item { margin-top: 4px; }
+
 .card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .card-actions .detail-link { margin-left: auto; }
 .btn-danger { color: var(--danger); border-color: var(--border); }
@@ -226,6 +236,9 @@ textarea:focus, select:focus, .field-input:focus { outline: none; border-color: 
     border-top: 1px solid var(--border);
     padding-top: 4px;
   }
+  .call-form { padding: 12px; }
+  .rx-option { min-height: 44px; padding: 4px 0; }
+  .rx-option input { width: 22px; height: 22px; }
   .card-actions { gap: 10px; }
   .card-actions .btn { min-height: 44px; }
   .card-actions .detail-link { border-top: none; margin-top: 0; padding-top: 0; }

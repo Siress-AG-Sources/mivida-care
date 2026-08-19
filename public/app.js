@@ -77,6 +77,14 @@ function fmtDate(d) {
   return String(d).slice(0, 10);
 }
 
+function fmtDateTime(d) {
+  if (!d) return "—";
+  const t = new Date(String(d).replace(" ", "T") + (String(d).endsWith("Z") ? "" : "Z"));
+  return isNaN(t.getTime()) ? String(d) : t.toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+
 function medsTxt(meds) {
   if (!meds || meds.length === 0) return "—";
   return meds.map((m) => `${m.name} (${m.dose || "?"})`).join(", ");
@@ -218,9 +226,114 @@ async function openPatient(id) {
     ${(st.open_refill_prompts || []).map((r) => `<div class="small">${esc(r.med_name)} — order by ${esc(fmtDate(r.order_by_date))}</div>`).join("") || `<div class="muted">None.</div>`}
     <h3 class="section-title" style="margin-top:16px">Open tasks</h3>
     ${(st.open_tasks || []).map((t) => `<div class="small">☐ ${esc(t.description)} (due ${esc(fmtDate(t.due_date))})</div>`).join("") || `<div class="muted">None.</div>`}
+
+    <div class="card-head" style="margin-top:20px">
+      <h3 class="section-title" style="margin-bottom:0">Call log</h3>
+      <button class="btn btn-sm btn-primary" id="btnNewCall">+ Log a call</button>
+    </div>
+    ${callFormHtml(st.patient.id, st.medications || [])}
+    <div id="callList" class="stack" style="margin-top:12px"></div>
   `;
-  $("#patientModal").showModal();
+  // showModal() throws InvalidStateError if the dialog is already open —
+  // openPatient() is also used to refresh the view after logging a call.
+  const dlg = $("#patientModal");
+  if (!dlg.open) dlg.showModal();
+  loadCalls(st.patient.id);
 }
+
+// ---- Call log ----
+function callFormHtml(patientId, meds) {
+  return `
+  <div id="callForm" class="call-form hidden" data-patient="${patientId}">
+    <label class="field"><span>When</span><input id="clWhen" type="datetime-local" /></label>
+    <label class="field"><span>Direction</span>
+      <select id="clDirection" class="field-input">
+        <option value="outbound">Outbound — we called</option>
+        <option value="inbound">Inbound — patient called</option>
+      </select>
+    </label>
+    <label class="field"><span>Duration (minutes)</span><input id="clDuration" type="number" min="0" placeholder="optional" /></label>
+    <label class="field"><span>Call notes</span><textarea id="clNotes" rows="4" placeholder="What was discussed, decisions made, what happens next."></textarea></label>
+    <fieldset class="rx-picker">
+      <legend>Prescriptions discussed</legend>
+      ${meds.length
+        ? meds.map((m) => `
+          <label class="rx-option">
+            <input type="checkbox" class="cl-med" value="${m.id}" />
+            <span><strong>${esc(m.name)}</strong>${m.dose ? " " + esc(m.dose) : ""}</span>
+          </label>`).join("")
+        : `<p class="muted small">No prescriptions on file for this patient.</p>`}
+    </fieldset>
+    <div class="row-end">
+      <button id="btnSaveCall" class="btn btn-primary">Save call</button>
+    </div>
+    <p id="clMsg" class="muted small"></p>
+  </div>`;
+}
+
+async function loadCalls(patientId) {
+  const box = $("#callList");
+  if (!box) return;
+  try {
+    const calls = await api("GET", `/patients/${patientId}/calls`);
+    if (!calls.length) {
+      box.innerHTML = `<div class="muted small">No calls logged yet.</div>`;
+      return;
+    }
+    box.innerHTML = calls.map((c) => `
+      <div class="call-item">
+        <div class="row">
+          <span class="badge ${c.direction === "inbound" ? "badge-ok" : "badge-muted"}">${esc(c.direction)}</span>
+          <span class="small"><strong>${esc(fmtDateTime(c.called_at))}</strong></span>
+          ${c.duration_minutes ? `<span class="muted small">${esc(c.duration_minutes)} min</span>` : ""}
+        </div>
+        ${c.notes ? `<p class="small" style="margin-top:6px">${esc(c.notes)}</p>` : `<p class="muted small" style="margin-top:6px">No notes.</p>`}
+        ${(c.medications || []).length
+          ? `<div class="row" style="margin-top:8px">${c.medications.map((m) =>
+              `<span class="badge badge-low">℞ ${esc(m.name)}${m.dose ? " " + esc(m.dose) : ""}</span>`).join("")}</div>`
+          : ""}
+      </div>`).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="muted small">${esc(e.message)}</div>`;
+  }
+}
+
+// Delegated: the form markup is rebuilt every time the modal opens.
+$("#patientModal").addEventListener("click", async (e) => {
+  if (e.target.closest("#btnNewCall")) {
+    const form = $("#callForm");
+    form.classList.toggle("hidden");
+    if (!form.classList.contains("hidden")) {
+      const now = new Date();
+      now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+      $("#clWhen").value = now.toISOString().slice(0, 16);
+      $("#clNotes").focus();
+    }
+    return;
+  }
+  if (e.target.closest("#btnSaveCall")) {
+    const form = $("#callForm");
+    const patientId = Number(form.dataset.patient);
+    const notes = $("#clNotes").value.trim();
+    if (!notes) { $("#clMsg").textContent = "Please add a note describing the call."; return; }
+    try {
+      await api("POST", `/patients/${patientId}/calls`, {
+        // Send an explicit UTC instant. A bare datetime-local value ("2026-08-19T10:10")
+        // has no offset, so the Worker would read it as UTC and the call would come
+        // back displayed hours off from what the doctor typed.
+        called_at: $("#clWhen").value ? new Date($("#clWhen").value).toISOString() : null,
+        direction: $("#clDirection").value,
+        duration_minutes: Number($("#clDuration").value) || null,
+        notes,
+        medication_ids: [...document.querySelectorAll(".cl-med:checked")].map((el) => Number(el.value)),
+      });
+      toast("Call logged.");
+      openPatient(patientId);
+    } catch (err) {
+      $("#clMsg").textContent = "Error: " + err.message;
+    }
+  }
+});
 
 // ---- Exceptions ----
 async function loadExceptions() {
