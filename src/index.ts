@@ -92,7 +92,7 @@ app.use("*", async (c, next) => {
     return new Response(null, { status: 204 });
   }
 
-  if (path === "/health" || path === "/debug") return next();
+  if (path === "/health") return next();
   // Admin routes have their own auth gate
   if (path.startsWith("/admin")) return next();
   // Admin routes also accessible via /api prefix
@@ -119,8 +119,9 @@ async function adminAuth(c: any, next: any) {
 app.get("/health", (c) => c.json({ ok: true, env: c.env.ENVIRONMENT }));
 
 // Debug: dump all env keys (excludes values) to diagnose secret binding
-app.get("/debug", (c) => {
-  const keys = Object.keys(c.env).filter((k) => k !== "MIVIDA_AUTH_TOKEN");
+// ADMIN-ONLY: gated behind adminAuth to prevent env key name leakage
+app.get("/debug", adminAuth, async (c) => {
+  const keys = Object.keys(c.env).filter((k) => k !== "MIVIDA_AUTH_TOKEN" && k !== "ADMIN_TOKEN" && k !== "ADMIN_TOKEN_2" && k !== "GITHUB_TOKEN" && k !== "RESEND_API_KEY");
   const hasToken = typeof c.env.MIVIDA_AUTH_TOKEN === "string" && c.env.MIVIDA_AUTH_TOKEN.length > 0;
   return c.json({ keys, hasToken, tokenLength: hasToken ? c.env.MIVIDA_AUTH_TOKEN.length : 0 });
 });
